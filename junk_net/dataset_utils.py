@@ -149,7 +149,7 @@ def get_dataset(split_name,dataset_dir,channels=1,reader=None):
 
   file_pattern = '%s_*.tfrecord'
 
-  assert split_name in ['train', 'validation']
+  assert split_name in ['train', 'test']
   params = read_meta_params(split_name,dataset_dir)
 
   file_pattern = os.path.join(dataset_dir, file_pattern % split_name)

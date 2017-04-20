@@ -20,7 +20,7 @@ def train_parser():
                         type=int, default=128)
 
     parser.add_argument('--learning_rate', '-l',
-                        type=float, default=0.01,
+                        type=float, default=0.0002,
                         help='''Initial learning rate.''')
 
     parser.add_argument('--learning_rate_decay_steps', '-r',

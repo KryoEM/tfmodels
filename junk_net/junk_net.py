@@ -24,8 +24,7 @@ def batch_activate(inputs,
         if activation_fn is not None:
             outputs = activation_fn(inputs)
 
-        return utils.collect_named_outputs(outputs_collections,
-                                           sc.original_name_scope,outputs)
+        return utils.collect_named_outputs(outputs_collections,sc.original_name_scope,outputs)
 
 @add_arg_scope
 def fire_module(inputs,

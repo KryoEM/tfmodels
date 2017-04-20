@@ -3,7 +3,7 @@ import math
 
 import  junk_net
 import  arg_parsing
-from    datasets import dataset_utils
+import  dataset_utils
 from    junk_preprocessing import get_preprocess_image
 
 slim = tf.contrib.slim
