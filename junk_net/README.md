@@ -2,7 +2,7 @@
 
 ## arguments
 
--i /jasper/data/train_data_sets/junk_detection/tfrecord/ -o /jasper/result/training/junk_detection/checkpoints/ -g 8
+-i /jasper/data/train_data_sets/junk_detection/tfrecord/ -o /jasper/result/training/junk_detection/checkpoints/ 
 
 ## tensorboard
 
