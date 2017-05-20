@@ -38,11 +38,16 @@ tprint('Finished TFRecord Conversions!')
 # _NUM_SHARDS = 5
 #
 # ##
-# def pixel_size_2_io_box_sizes(psize,cls_psize=3.0,part_rad=160):
-#     ''' Converts input pixel size and particle diameter to input and output box sizes, used for particle extraction '''
-#     bin          = cls_psize/psize
-#     out_box_size = 1.5*part_rad/cls_psize
-#     return np.round(bin*out_box_size),out_box_size
+import numpy as np
+
+def pixel_size_2_io_box_sizes(psize,cls_psize=3.0,part_d=160):
+    bin          = cls_psize/psize
+    out_box_size = 1.5*part_d/cls_psize
+    return np.round(bin*out_box_size),out_box_size
+
+print pixel_size_2_io_box_sizes(0.429109,3.0,160)
+print pixel_size_2_io_box_sizes(1.3,3.0,160)
+##
 #
 # def int64_feature(values):
 #   if not isinstance(values, (tuple, list)):
