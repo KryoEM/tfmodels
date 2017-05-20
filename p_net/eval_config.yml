@@ -1,0 +1,6 @@
+num_shards: 20
+batch_size: 64
+eval_interval_secs: 30
+reader_threads: 16
+use_gpu: True
+

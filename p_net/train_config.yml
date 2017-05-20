@@ -1,0 +1,10 @@
+batch_size: 32
+learning_rate: 0.001
+learning_rate_decay: 0.5
+learning_rate_decay_steps: 1000
+max_steps: 200000
+num_gpus: 1
+print_log_steps: 30
+reader_threads: 16
+save_checkpoint_secs: 30
+save_summaries_secs: 30
