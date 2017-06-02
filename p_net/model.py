@@ -11,8 +11,8 @@ slim = tf.contrib.slim
 from    model import Model,fire_module,fire_reduction,split_module,prelu,tiny_darknet_module,darknet_module
 from    squeezenet.tfrecorder import create_dataset
 
-WEIGHT_DECAY = 1e-8
-ALPHA_DECAY  = 1e-8
+WEIGHT_DECAY = 1e-6
+ALPHA_DECAY  = 1e-6
 DD           = 4
 
 def create_instance(split_name,data_dir):
@@ -41,7 +41,7 @@ class PModel(Model):
                                     outputs_collections=[end_point_collection]):
 
                     with slim.arg_scope([fire_module,split_module],kernel_size=[3,3]):
-                        depth = 16
+                        depth = 32
                         net = slim.conv2d(images, depth, [3, 3], scope='conv1_0')
 
                         depth *= 2
@@ -128,7 +128,8 @@ class PModel(Model):
 
     def _image_preprocessing_train(self,image):
         image = self._preprocess_common(image)
-        distorted_image = tf.image.random_flip_left_right(image)
+        image = tf.image.random_flip_left_right(image)
+        distorted_image = tf.image.random_flip_up_down(image)
         tf.summary.image('final_distorted_image', tf.expand_dims(distorted_image, 0))
         # return image
         return distorted_image
