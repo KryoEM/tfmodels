@@ -81,7 +81,8 @@ def rebalance_files(files,classes):
     return balanced
 
 def get_star_coords(star_file):
-    # get path of phase flipped micrograph
+    # here we also convert oringinal micrograph location to a phase flipped micrograph location
+    # get path of phase flipped micrographs
     ajob = os.path.dirname(os.path.realpath(star_file))
     root = os.path.abspath(os.path.join(ajob,'../..'))
     ctfroot = os.path.join(root,'CtfFind')
@@ -106,20 +107,21 @@ def get_star_coords(star_file):
     return coords
 
 def add_class_coords(allcoords,stars,cid):
-    if len(stars) > 0:
-        coords = get_star_coords(stars[0])
+    for starfile in stars:
+        coords = get_star_coords(starfile)
         for key in coords:
             mcoords = coords[key]
             if not key in allcoords:
                 allcoords.update({key: {cid: mcoords}})
             else:
-                allcoords[key].update({key: mcoords})
+                allcoords[key].update({cid: mcoords})
 
 ##### DEFINE WRITING DATA #############
 class ParticleCoords2TFRecord(Directory2TFRecord):
     def __init__(self,data_in_dir,data_out_dir):
         super(ParticleCoords2TFRecord, self).__init__(data_in_dir,data_out_dir)
-        # all subdirectories in data_in_dir define classes
+        # each subdirectory in data_in_dir corresponds to a separate class
+        # each class subdirectory contains symlink to a selection relion job
         topdirs = np.sort(os.walk(data_in_dir).next()[1])
         class2label = {}
         label2class = {}
@@ -135,8 +137,14 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         self.label2class = label2class
         # here allcoords has particle coordinates for each class per micrograph
         self.allcoords   = allcoords
+        # count all particles
+        classcnt    = np.zeros(len(class2label))
+        for micro in allcoords:
+            for cls in allcoords[micro]:
+                classcnt[class2label[cls]] += len(allcoords[micro][cls])
 
-
+        for label in label2class:
+            print 'Total particles in %s \t = %d' % (label2class[label],classcnt[label])
     ##### Overriding functions ########
     def test_example(self,provider):
         [image, label] = provider.get(['image', 'label'])
