@@ -87,7 +87,7 @@ def get_star_coords(star_file):
     root = os.path.abspath(os.path.join(ajob,'../..'))
     ctfroot = os.path.join(root,'CtfFind')
 
-    print "Looking for phase flipped micros in %s --> %s" % (star_file,os.path.realpath(star_file))
+    print "Looking for phase flipped micros of %s --> %s" % (star_file,os.path.realpath(star_file))
     pf = list_dirtree(ctfroot,'_pf.mrc')
     file2dir = {}
     for name in pf:
@@ -114,7 +114,10 @@ def add_class_coords(allcoords,stars,cid):
             if not key in allcoords:
                 allcoords.update({key: {cid: mcoords}})
             else:
-                allcoords[key].update({cid: mcoords})
+                if not cid in allcoords[key]:
+                    allcoords[key].update({cid: mcoords})
+                else:
+                   allcoords[key][cid].extend(mcoords)
 
 ##### DEFINE WRITING DATA #############
 class ParticleCoords2TFRecord(Directory2TFRecord):
@@ -142,9 +145,10 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         for micro in allcoords:
             for cls in allcoords[micro]:
                 classcnt[class2label[cls]] += len(allcoords[micro][cls])
-
+        # print totals
         for label in label2class:
             print 'Total particles in %s \t = %d' % (label2class[label],classcnt[label])
+
     ##### Overriding functions ########
     def test_example(self,provider):
         [image, label] = provider.get(['image', 'label'])
