@@ -1,7 +1,7 @@
 import tensorflow as tf
 import os
 import dataset_utils
-from   dataset_utils      import ImageRaw,ClassCoords,read_dataset_meta
+from   dataset_utils      import DataRaw,read_dataset_meta
 from   tfrecorder_generic import Directory2TFRecord
 from   fileio.filetools   import list_dirtree
 from   scipy import misc
@@ -9,33 +9,73 @@ import numpy as np
 from   fileio import filetools as ft
 from   fileio import mrc
 from   joblib import Parallel, delayed
-import multiprocessing
+# import multiprocessing as mp
 import random
 from   star import star
 from   ctf  import CTF
 import cv2
-import image
 from   myplotlib import imshow,clf
 from   matplotlib import pyplot as plt
-from scipy.spatial.distance import cdist
+from   scipy.spatial.distance import cdist
+from   autopick import cfg
+import image
+from   utils import tprint
+
+# import utils
+# import sys
 
 slim   = tf.contrib.slim
 
-#### Global PARAMS #######
-# picking resolution
-RPN_RES    = 6.0
-PART_D     = 200.0*(2.0/RPN_RES)
+#### TFRECORDER PARAMS #######
 LINE_WIDTH = 2.0
 N_EXAMPLES = 100
 IMAGE_KEY = 'image/uint8'
 SHAPE_KEY = 'shape'
 ##########################
 
+##
+def ravel_coords(v,sz):
+    res = np.int64(np.ravel_multi_index(v.transpose(), sz) + 1)
+    return np.append(res,np.int64([0,0]))
+
+def unravel_coords(idxs,sz):
+    return np.int32(np.unravel_index(idxs[:-2]-1, sz)).transpose()
+
+def calc_micro_pick_shape(m):
+    # read particle diameter
+    jobfile = os.path.join(ft.updirs(m, 3), '.gui_manualpickrun.job')
+    part_d = part_d_from_jobfile(jobfile)
+    # calculate binning that brings particle to canonic size
+    psize = mrc.psize(m)
+    bn = (part_d / psize) / cfg.PART_D_PIXELS
+    # calculate resized window size
+    return np.int32(np.round(np.float32(mrc.shape(m)[1:]) / bn))
+
+def part_d_from_jobfile(jobfile):
+    '''Reads particle diameter from jobfile'''
+    line = ft.get_line(jobfile, 'Particle diameter')
+    return np.float32(line.split('==')[1])
+##
+
 def create_instance(*args,**kwargs):
     return ParticleCoords2TFRecord(*args,**kwargs)
 
+def create_dataset(split_name, data_dir):
+    dataset_meta = read_dataset_meta(split_name, data_dir)
+    example_meta = dataset_meta['example_meta']
+    coordlabels  = example_meta['classes']
+    items_to_handlers = {
+        'image':   DataRaw(label = IMAGE_KEY, shape_key=SHAPE_KEY, dtype=example_meta['dtype'])
+        # SHAPE_KEY: DataRaw(label = SHAPE_KEY, dtype=tf.int32)
+    }
+    # add handlers for each class coordinates
+    for label in coordlabels:
+        items_to_handlers.update({label:  DataRaw(label = label, shape=(-1,2), dtype=tf.int32)})
+
+    return dataset_utils.create_dataset(split_name,data_dir,items_to_handlers,dataset_meta)
+
 def psize2bn(psize):
-    return 2.0 * psize / RPN_RES
+    return 2.0 * psize / cfg.RPN_RES
 
 def plot_class_coords(im,class_coords,d):
     ax  = plt.subplot()
@@ -49,28 +89,15 @@ def plot_class_coords(im,class_coords,d):
     for key in class_coords:
         for coord in class_coords[key]:
             y, x = coord
-            circ = plt.Circle((x, y), radius=d / 2.0, color=colors[idx], fill=False, lw=LINE_WIDTH)
-            ax.add_patch(circ)
+            if x >= 0:
+                circ = plt.Circle((x, y), radius=d / 2.0, color=colors[idx], fill=False, lw=LINE_WIDTH)
+                ax.add_patch(circ)
             # im[coord[0],coord[1]] = 255
         cstr += colors[idx] + ','
         classes += key + ','
         idx  += 1
         ax.axis((0, im.shape[1], im.shape[0], 0))
     ax.set_title("%s = %s" % (cstr[:-1],classes[:-1]))
-
-def create_dataset(split_name, data_dir):
-    dataset_meta = read_dataset_meta(split_name, data_dir)
-    example_meta = dataset_meta['example_meta']
-    coordlabels  = example_meta['classes']
-    items_to_handlers = {
-        'image':   ImageRaw(image_key=IMAGE_KEY,shape_key=SHAPE_KEY, dtype=example_meta['dtype']),
-        'coords':  ClassCoords(coordlabels = coordlabels)
-    }
-    items_to_descriptions = {
-        'image':  'A grayscale image of fixed size.',
-        'coords': 'A dictionary with class labels and coordinates',
-    }
-    return dataset_utils.create_dataset(split_name,data_dir,items_to_handlers,items_to_descriptions,dataset_meta)
 
 def parse_particles_star(star_file):
     # here we also convert oringinal micrograph location to a phase flipped micrograph location
@@ -159,7 +186,9 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         print "Generating example frames from the tfrecord ..."
         out_dir = os.path.join(self.tfrecord_dir,'example_ground_truth')
         ft.mkdir_assure(out_dir)
-        image,coords = provider.get(['image','coords'])
+        data   = provider.get(['image']+self.classes)
+        image  = data[0]
+        coords = data[1:]
         with tf.Session().as_default() as sess:
             with tf.Graph().as_default():
                 with tf.device('/device:CPU:0'):
@@ -167,7 +196,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                     tf.train.start_queue_runners(coord=coord)
                     for i in range(N_EXAMPLES):
                         im, c = sess.run([image, coords])
-                        plot_class_coords(im,c,PART_D)
+                        plot_class_coords(np.squeeze(im),dict(zip(self.classes,c)),cfg.PART_D)
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
                         plt.gcf().set_figheight(10.0)
@@ -177,60 +206,84 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                         fig.savefig(fname)
                         plt.close(fig)
 
-    # def process_shard_parallel_CPU(self,shardidxs,keys,print_string,print_step):
-    #     '''This function extracts data for the whole shard and can be reimplemented for possibly parallel
-    #        image conversion in the child class'''
-    #     examples_data = []
-    #     num_cores = multiprocessing.cpu_count()
-    #
-    #     #a = Parallel(n_jobs=num_cores)(delayed(self.key2int_records)(keys[idx]) for idx in shardidxs)
-    #     a = Parallel(n_jobs=num_cores)(delayed(key2int_records)(self,keys[idx]) for idx in shardidxs)
-    #
-    #     return examples_data
-
     def init_feature_keys(self,box_keys=[]):
         self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY]
 
     def get_example_keys(self):
-       return self.allmicros.keys()
+        tprint('Converting micrographs to tiles of %d pixels, particle diameter %d pixels ...' % (cfg.PICK_WIN,cfg.PART_D_PIXELS))
+        micros = self.allmicros.keys()
+        random.shuffle(micros)
+        # convert each micro into a set of tiles of cfg.PICK_WIN size
+        # the training will run on one tile per record
+        keys = []
+        for m in micros:
+            sz    = calc_micro_pick_shape(m)
+            xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
+            # create keys using tile coordinates
+            for x in xs:
+                for y in ys:
+                    keys.append('%s:%d,%d' % (m,x,y))
+        return keys
 
     def get_example_meta(self):
         return {'dtype': tf.uint8,'nclasses':len(self.classes),'classes':self.classes}
 
-    def get_shapebn(self,shape,psize):
-        bn     = psize2bn(psize)
-        return tuple(np.int32(np.round(np.array(shape)*bn))) #.tolist()
-
+    # !!
     def key2byte_records(self,key):
-        ''' create a compressed png buffer '''
-        im,psize = mrc.load_psize(key)
-        im       = im[0]
+        ''' Obtain a record with tile data '''
+
+        # extract micrograph name and tile coordinates
+        micro = key.split(':')[0]
+        x,y   = np.int32(key.split(':')[1].split(','))
+
+        im      = mrc.load(micro)[0]
+        szbn    = calc_micro_pick_shape(micro)
+        psize   = mrc.psize(micro)
+        bn      = float(im.shape[0])/szbn[0]
+        psizebn = psize*bn
+        tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
+
+        # leave only particle that are at least particle diameter from the border
+        allowed_border = cfg.PART_D_PIXELS
+
         # resize image
-        bn       = psize2bn(psize)
-        szbn     = self.get_shapebn(im.shape,psize)
-        imbn     = cv2.resize(im,szbn[::-1],interpolation = cv2.INTER_AREA)
+        imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
         # imbn     = cv2.resize(im,None,fx=1.0/27,fy=1.0/27,interpolation = cv2.INTER_AREA)
-        psizebn  = psize*float(im.shape[0])/szbn[0]
         # remove bad pixels
         imbn     = image.unbad2D(imbn,thresh=10,neib=3)
         # flip phases
-        imff     = self.allmicros[key]['ctf'].phase_flip_cpu(imbn,psizebn)
+        imff     = self.allmicros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
+        # cut tile out
+        imt      = imff[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
         # convert image to uint8
-        im8      = image.float32_to_uint8(imff)
+        im8      = image.float32_to_uint8(imt)
         # save image
         recs     = {IMAGE_KEY:im8.tobytes()}
         ## Save coordinates ##
-        coords   = self.allmicros[key]['coords']
-        for label in coords.keys():
-            lcoords = np.array(coords[label], dtype=np.float32)
-            # switch x and y
-            lcoords = lcoords[:,::-1]
-            # convert glbal coords to binned
-            lcoords = np.int32(np.round(bn * lcoords)).tobytes()
-            recs.update({label: lcoords})
+        coords   = self.allmicros[micro]['coords']
+        for label in self.classes:
+            if label in coords:
+                lcoords = np.array(coords[label], dtype=np.float32)
+                # switch x and y
+                lcoords = lcoords[:,::-1]
+                # convert global coords to binned
+                lcoords = np.int32(np.round(lcoords/bn))
+                # move to tile coordinates
+                lcoords[:,0] -= x
+                lcoords[:,1] -= y
+                # leave only particles that are inside the tile
+                loc_inside = (lcoords[..., 0] >= allowed_border) & \
+                             (lcoords[..., 1] >= allowed_border) & \
+                             (lcoords[..., 0] < tilesz[0] - allowed_border) & \
+                             (lcoords[..., 1] < tilesz[1] - allowed_border)
+                lcoords = lcoords[loc_inside]
+            else:
+                lcoords = np.zeros((0,2),dtype=np.int32) #np.int32([-1,-1])
+
+            recs.update({label: ravel_coords(lcoords,tilesz)}) #lcoords.tobytes()})
 
         # save image shape
-        recs.update({SHAPE_KEY:np.array(szbn,dtype=np.int32).tobytes()})
+        recs.update({SHAPE_KEY:np.array(tilesz,dtype=np.int32).tobytes()})
 
         # image_data has to be in python str format
         return recs
@@ -258,6 +311,23 @@ if __name__ == '__main__':
 
 
 ##   ###### GARBAGE #########
+
+    # def get_shapebn(self,shape,psize):
+    #     bn     = psize2bn(psize)
+    #     return tuple(np.int32(np.round(np.array(shape)*bn))) #.tolist()
+
+    # chunks = utils.part_idxs(shardidxs,batch=num_proc)
+    # for chunk in chunks:
+    #     processes = []
+    #     for idx in chunk:
+    #         p = mp.Process(target=self.process_shard_single_proc, args=(keys[idx],))
+    #         processes.append(p)
+    #     # start processes
+    #     [p.start() for p in processes]
+    #     [p.join() for p in processes]
+    #     sys.stdout.write('%s, image %d/%d' % (print_string, idx + 1, len(keys)))
+    #     sys.stdout.flush()
+
 
     # def key2int_records(self,key):
     #     psize    = mrc.psize(key)
