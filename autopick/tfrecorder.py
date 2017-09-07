@@ -28,7 +28,7 @@ slim   = tf.contrib.slim
 
 #### TFRECORDER PARAMS #######
 LINE_WIDTH = 2.0
-N_EXAMPLES = 100
+N_EXAMPLES = 500
 IMAGE_KEY = 'image/uint8'
 SHAPE_KEY = 'shape'
 ##########################
@@ -49,7 +49,7 @@ def calc_micro_pick_shape(m):
     psize = mrc.psize(m)
     bn = (part_d / psize) / cfg.PART_D_PIXELS
     # calculate resized window size
-    return np.int32(np.round(np.float32(mrc.shape(m)[1:]) / bn))
+    return np.int32(np.round(np.float32(mrc.shape(m)[1:]) / bn)),bn
 
 def part_d_from_jobfile(jobfile):
     '''Reads particle diameter from jobfile'''
@@ -70,7 +70,7 @@ def create_dataset(split_name, data_dir):
     }
     # add handlers for each class coordinates
     for label in coordlabels:
-        items_to_handlers.update({label:  DataRaw(label = label, shape=(-1,2), dtype=tf.int32)})
+        items_to_handlers.update({label:  DataRaw(label = label, shape=(-1,), dtype=tf.int64)})
 
     return dataset_utils.create_dataset(split_name,data_dir,items_to_handlers,dataset_meta)
 
@@ -130,7 +130,8 @@ def add_class_coords(allmicros,stars,cid):
 def remove_class_overlap(allmicros):
     ''' remove particles that belong to more than one class '''
     for micro in allmicros:
-        classes    = allmicros[micro]['coords']
+        classes   = allmicros[micro]['coords']
+
         # collect overlapping coordinates
         allcoords = np.zeros((0,2))
         overlap   = np.zeros((0,2))
@@ -186,19 +187,21 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         print "Generating example frames from the tfrecord ..."
         out_dir = os.path.join(self.tfrecord_dir,'example_ground_truth')
         ft.mkdir_assure(out_dir)
-        data   = provider.get(['image']+self.classes)
-        image  = data[0]
-        coords = data[1:]
+        keys   = ['image']+self.classes
+        data   = provider.get(keys)
         with tf.Session().as_default() as sess:
             with tf.Graph().as_default():
                 with tf.device('/device:CPU:0'):
                     coord = tf.train.Coordinator()
                     tf.train.start_queue_runners(coord=coord)
                     for i in range(N_EXAMPLES):
-                        im, c = sess.run([image, coords])
-                        plot_class_coords(np.squeeze(im),dict(zip(self.classes,c)),cfg.PART_D)
+                        d = dict(zip(keys, sess.run(data)))
+                        im    = d['image']
+                        dd    = dict((k,unravel_coords(d[k],im.shape)) for k in self.classes)
+                        plot_class_coords(im,dd,cfg.PART_D_PIXELS)
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
+                        print "saving example %s, %d out of %d" % (fname,i,N_EXAMPLES)
                         plt.gcf().set_figheight(10.0)
                         plt.gcf().set_figwidth(10.0)
                         fig = plt.gcf()
@@ -209,58 +212,13 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
     def init_feature_keys(self,box_keys=[]):
         self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY]
 
-    def get_example_keys(self):
-        tprint('Converting micrographs to tiles of %d pixels, particle diameter %d pixels ...' % (cfg.PICK_WIN,cfg.PART_D_PIXELS))
-        micros = self.allmicros.keys()
-        random.shuffle(micros)
-        # convert each micro into a set of tiles of cfg.PICK_WIN size
-        # the training will run on one tile per record
-        keys = []
-        for m in micros:
-            sz    = calc_micro_pick_shape(m)
-            xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
-            # create keys using tile coordinates
-            for x in xs:
-                for y in ys:
-                    keys.append('%s:%d,%d' % (m,x,y))
-        return keys
-
-    def get_example_meta(self):
-        return {'dtype': tf.uint8,'nclasses':len(self.classes),'classes':self.classes}
-
-    # !!
-    def key2byte_records(self,key):
-        ''' Obtain a record with tile data '''
-
-        # extract micrograph name and tile coordinates
-        micro = key.split(':')[0]
-        x,y   = np.int32(key.split(':')[1].split(','))
-
-        im      = mrc.load(micro)[0]
-        szbn    = calc_micro_pick_shape(micro)
-        psize   = mrc.psize(micro)
-        bn      = float(im.shape[0])/szbn[0]
-        psizebn = psize*bn
-        tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
-
+    def calc_tile_coords(self,micro,x,y,bn):
+        ''' calculates particle coordinates in the tile coordinate system '''
         # leave only particle that are at least particle diameter from the border
         allowed_border = cfg.PART_D_PIXELS
-
-        # resize image
-        imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
-        # imbn     = cv2.resize(im,None,fx=1.0/27,fy=1.0/27,interpolation = cv2.INTER_AREA)
-        # remove bad pixels
-        imbn     = image.unbad2D(imbn,thresh=10,neib=3)
-        # flip phases
-        imff     = self.allmicros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
-        # cut tile out
-        imt      = imff[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
-        # convert image to uint8
-        im8      = image.float32_to_uint8(imt)
-        # save image
-        recs     = {IMAGE_KEY:im8.tobytes()}
-        ## Save coordinates ##
-        coords   = self.allmicros[micro]['coords']
+        tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
+        coords  = self.allmicros[micro]['coords']
+        tcoords = {}
         for label in self.classes:
             if label in coords:
                 lcoords = np.array(coords[label], dtype=np.float32)
@@ -278,9 +236,69 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                              (lcoords[..., 1] < tilesz[1] - allowed_border)
                 lcoords = lcoords[loc_inside]
             else:
-                lcoords = np.zeros((0,2),dtype=np.int32) #np.int32([-1,-1])
+                lcoords = np.zeros((0,2),dtype=np.int32)
+            tcoords.update({label: lcoords})
+        return tcoords
 
-            recs.update({label: ravel_coords(lcoords,tilesz)}) #lcoords.tobytes()})
+    def get_example_keys(self):
+        tprint('Converting micrographs to tiles of %d pixels, particle diameter %d pixels ...' % (cfg.PICK_WIN,cfg.PART_D_PIXELS))
+        micros = self.allmicros.keys()
+        random.shuffle(micros)
+        # convert each micro into a set of tiles of cfg.PICK_WIN size
+        # the training will run on one tile per record
+        keys = []
+        for m in micros:
+            sz,bn = calc_micro_pick_shape(m)
+            xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
+            # create keys using tile coordinates
+            for x in xs:
+                for y in ys:
+                    tcoords = self.calc_tile_coords(m,x,y,bn)
+                    # see how many particles of each class
+                    lens    = [len(tcoords[k]) for k in tcoords]
+                    if np.sum(np.array(lens)) < 1:
+                        # skip empty tile
+                        continue
+                    else:
+                        keys.append('%s:%d,%d' % (m,x,y))
+        return keys
+
+    def get_example_meta(self):
+        return {'dtype': tf.uint8,'nclasses':len(self.classes),'classes':self.classes}
+
+    # !!
+    def key2byte_records(self,key):
+        ''' Obtain a record with tile data '''
+
+        # extract micrograph name and tile coordinates
+        micro   = key.split(':')[0]
+        x,y     = np.int32(key.split(':')[1].split(','))
+
+        im      = mrc.load(micro)[0]
+        szbn,bn = calc_micro_pick_shape(micro)
+
+        psize   = mrc.psize(micro)
+        psizebn = psize*bn
+        tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
+
+        # resize image
+        imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
+        # imbn     = cv2.resize(im,None,fx=1.0/27,fy=1.0/27,interpolation = cv2.INTER_AREA)
+        # remove bad pixels
+        imbn     = image.unbad2D(imbn,thresh=10,neib=3)
+        # flip phases
+        imff     = self.allmicros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
+        # cut tile out
+        imt      = imff[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
+        # convert image to uint8
+        im8      = image.float32_to_uint8(imt)
+        # save image
+        recs     = {IMAGE_KEY:im8.tobytes()}
+        ## Save particle coordinates of the tile ##
+        tcoords  = self.calc_tile_coords(micro,x,y,bn)
+        # add coords of all particle types to the record
+        for label in self.classes:
+            recs.update({label: ravel_coords(tcoords[label],tilesz).tobytes()})
 
         # save image shape
         recs.update({SHAPE_KEY:np.array(tilesz,dtype=np.int32).tobytes()})

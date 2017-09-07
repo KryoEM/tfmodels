@@ -2,7 +2,7 @@
 # picking diameter in pixels
 PART_D_PIXELS = 64
 # picking window size
-PICK_WIN      = 256
+PICK_WIN      = 8*PART_D_PIXELS
 
 # picking resolution
 # RPN_RES    = 6.0
