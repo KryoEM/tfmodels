@@ -4,9 +4,9 @@ PART_D_PIXELS = 64
 # picking window size
 PICK_WIN      = 8*PART_D_PIXELS
 
-# picking resolution
-# RPN_RES    = 6.0
-# particle diameter
-# PART_D     = 200.0*(2.0/RPN_RES)
-# PART_R     = PART_D/2.0
-##########################
+# particle picking strides
+STRIDES       = [8]
+
+# focus loss function parameter
+# GAMMA         = 0.0
+

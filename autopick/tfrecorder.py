@@ -20,17 +20,20 @@ from   scipy.spatial.distance import cdist
 from   autopick import cfg
 import image
 from   utils import tprint
-
-# import utils
-# import sys
+import functools
+import multiprocessing as mp
+from   multiprocessing.dummy import Pool as ThreadPool
 
 slim   = tf.contrib.slim
 
 #### TFRECORDER PARAMS #######
 LINE_WIDTH = 2.0
 N_EXAMPLES = 500
-IMAGE_KEY = 'image/uint8'
-SHAPE_KEY = 'shape'
+IMAGE_KEY  = 'image/uint8'
+SHAPE_KEY  = 'shape'
+BACKGROUND = 'background'
+CLEAN      = 'clean'
+RESIZE_MICROS = True
 ##########################
 
 ##
@@ -41,20 +44,27 @@ def ravel_coords(v,sz):
 def unravel_coords(idxs,sz):
     return np.int32(np.unravel_index(idxs[:-2]-1, sz)).transpose()
 
-def calc_micro_pick_shape(m):
-    # read particle diameter
-    jobfile = os.path.join(ft.updirs(m, 3), '.gui_manualpickrun.job')
-    part_d = part_d_from_jobfile(jobfile)
-    # calculate binning that brings particle to canonic size
-    psize = mrc.psize(m)
-    bn = (part_d / psize) / cfg.PART_D_PIXELS
-    # calculate resized window size
-    return np.int32(np.round(np.float32(mrc.shape(m)[1:]) / bn)),bn
-
-def part_d_from_jobfile(jobfile):
-    '''Reads particle diameter from jobfile'''
-    line = ft.get_line(jobfile, 'Particle diameter')
+def path2part_diameter(path):
+    ''' Read particle diameter from manual picking job '''
+    jobfile = os.path.join(ft.updirs(path, 2), '.gui_manualpickrun.job')
+    line    = ft.get_line(jobfile, 'Particle diameter')
     return np.float32(line.split('==')[1])
+    # return part_d_from_jobfile(jobfile)
+
+def path2psize(path):
+    ''' Read particle diameter from manual picking job '''
+    jobfile = os.path.join(ft.updirs(path, 2), '.gui_ctffindrun.job')
+    line    = ft.get_line(jobfile, 'Magnified pixel size')
+    return np.float32(line.split('==')[1])
+
+def calc_micro_pick_shape(micro,D,psize):
+    # read particle diameter
+    # part_d = path2part_diameter(micro)
+    # calculate binning that brings particle to canonic size
+    # psize = mrc.psize(micro)
+    bn = (D / psize) / cfg.PART_D_PIXELS
+    # calculate resized window size
+    return np.int32(np.round(np.float32(mrc.shape(micro)[1:]) / bn)),bn
 ##
 
 def create_instance(*args,**kwargs):
@@ -66,7 +76,6 @@ def create_dataset(split_name, data_dir):
     coordlabels  = example_meta['classes']
     items_to_handlers = {
         'image':   DataRaw(label = IMAGE_KEY, shape_key=SHAPE_KEY, dtype=example_meta['dtype'])
-        # SHAPE_KEY: DataRaw(label = SHAPE_KEY, dtype=tf.int32)
     }
     # add handlers for each class coordinates
     for label in coordlabels:
@@ -115,45 +124,52 @@ def parse_particles_star(star_file):
             micros[key]['coords'].append(coord)
     return micros
 
-def add_class_coords(allmicros,stars,cid):
-    for starfile in stars:
-        coords = parse_particles_star(starfile)
-        for key in coords:
-            if not key in allmicros:
-                allmicros.update({key: {'coords':{cid: coords[key]['coords']},'ctf':coords[key]['ctf']}})
-            else:
-                if not cid in allmicros[key]:
-                    allmicros[key]['coords'].update({cid: coords[key]['coords']})
-                else:
-                   allmicros[key]['coords'][cid].extend(coords[key]['coords'])
-
-def remove_class_overlap(allmicros):
-    ''' remove particles that belong to more than one class '''
-    for micro in allmicros:
-        classes   = allmicros[micro]['coords']
-
-        # collect overlapping coordinates
-        allcoords = np.zeros((0,2))
-        overlap   = np.zeros((0,2))
-        for key in classes:
-            coords = np.array(classes[key])
-            if allcoords.size > 0:
-                dist    = cdist(coords,allcoords).min(axis=1)
-                overlap = np.concatenate((overlap,coords[dist==0,:]),0)
-            allcoords = np.concatenate((allcoords,coords),0)
-        # remove overlapping coordinates
-        if overlap.size > 0:
-            for key in classes:
-                coords = np.array(classes[key])
-                dist = cdist(coords,overlap).min(axis=1)
-                classes[key].coords = np.delete(classes[key].coords,np.where(dist==0)[0])
-            allmicros[micro]['coords'] = classes
-    return allmicros
-
 ##### DEFINE WRITING DATA #############
 class ParticleCoords2TFRecord(Directory2TFRecord):
+
+    @staticmethod
+    def preprocess_micro(microdata):
+        micro,microdict = microdata
+        D  = microdict['part_diameter']
+        im = mrc.load(micro)[0]
+        psize    = microdict['psize']
+        szbn, bn = calc_micro_pick_shape(micro,D,psize)
+        psizebn  = psize * bn
+        assert(np.all(np.int32(szbn)<np.int32(im.shape)))
+        # resize image
+        imbn  = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
+        # remove bad pixels
+        imbn  = image.unbad2D(imbn, thresh=10, neib=3)
+        # flip phases
+        # imff  = microdict['ctf'].phase_flip_cpu(imbn, psizebn)
+        # fname = os.path.join(resizedir, os.path.basename(micro))
+        imbn  = image.float32_to_uint8(imbn)
+        mrc.save(imbn, microdict['resizedname'], pixel_size=psizebn)
+        # microdict.update({'resizedname': fname})
+        # return microdict
+
+    def add_class_coords(self, allmicros, stars, cid):
+        for starfile in stars:
+            starfile = os.path.realpath(starfile)
+            D      = path2part_diameter(starfile)
+            psize  = path2psize((starfile))
+            params = parse_particles_star(starfile)
+            for micro in params:
+                if not micro in allmicros:
+                    resizedname = os.path.join(self._resized_micros_dir, os.path.basename(micro))
+                    allmicros.update({micro: {'coords': {cid: params[micro]['coords']}, 'ctf': params[micro]['ctf'],
+                                              'part_diameter': D,'psize': psize,'resizedname':resizedname}})
+                else:
+                    if not cid in allmicros[micro]:
+                        allmicros[micro]['coords'].update({cid: params[micro]['coords']})
+                    else:
+                        allmicros[micro]['coords'][cid].extend(params[micro]['coords'])
+
     def __init__(self,data_in_dir,data_out_dir):
+
         super(ParticleCoords2TFRecord, self).__init__(data_in_dir,data_out_dir)
+        self._resized_micros_dir = os.path.join(ft.updirs(data_in_dir+'/',1), 'ResizedMicrographs')
+
         # each subdirectory in data_in_dir corresponds to a separate class
         # each class subdirectory contains symlink to a selection relion job
         topdirs = np.sort(os.walk(data_in_dir).next()[1])
@@ -166,26 +182,94 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             label2class.update({d:cid})
             # get all star files with particle coordinates for this class
             stars = list_dirtree(os.path.join(data_in_dir,cid), 'particles.star')
-            add_class_coords(allmicros,stars,cid)
+            self.add_class_coords(allmicros,stars,cid)
 
         # initialize box class keys
         self.classes = class2label.keys()
         self.init_feature_keys(self.classes)
         # here allmicros has particle coordinates for each class per micrograph
-        self.allmicros   = remove_class_overlap(allmicros)
+        allmicros   = ParticleCoords2TFRecord.remove_class_overlap(allmicros)
+
         # count all particles
         classcnt    = np.zeros(len(class2label))
         for micro in allmicros:
             for cls in allmicros[micro]['coords']:
                 classcnt[class2label[cls]] += len(allmicros[micro]['coords'][cls])
         # print totals
+        # print "Total micrographs %d" % len(allmicros)
         for label in label2class:
-            print 'Total particles in %s \t = %d' % (label2class[label],classcnt[label])
+            print 'Total coordinates in %s \t = %d' % (label2class[label],classcnt[label])
+
+        if RESIZE_MICROS:
+            print "Resizing %d micrographs" % len(allmicros)
+            ft.mkdir_assure(self._resized_micros_dir)
+            f = functools.partial(ParticleCoords2TFRecord.preprocess_micro)
+            # Sequential
+            # for micro in allmicros: #!!
+            #      f((micro,allmicros[micro]))
+            # Parallel
+            num_proc = 2 * mp.cpu_count()
+            pool = ThreadPool(num_proc)
+            pool.map(f, zip(allmicros.keys(), [allmicros[m] for m in allmicros]))
+
+        # save updated micrographs
+        self.allmicros = allmicros #dict(zip(allmicros.keys(),updmicros))
+
+    @staticmethod
+    def remove_class_overlap(allmicros):
+        ''' remove particles that belong to more than one class '''
+        for micro in allmicros:
+            # available particle classes in the micrograph
+            classes = allmicros[micro]['coords']
+            D = allmicros[micro]['part_diameter'] #micro2part_diameter(micro))
+            R = D / 2.
+
+            # ------- add background coordinates around each particle ---------------
+            if CLEAN in classes:
+                clean_coords = np.array(classes[CLEAN])
+                addcoords = []
+                for coord in clean_coords:
+                    # add 4 neighbors
+                    for dx in [-R, 0, R]:
+                        for dy in [-R, 0, R]:
+                            if (not (dx == 0 and dy == 0)) and (dx == 0 or dy == 0):
+                                addcoords.append((coord + np.int32([dx, dy])).tolist())
+                # append clean particle neighbors to background
+                if BACKGROUND in classes:
+                    classes[BACKGROUND] += addcoords
+                else:
+                    classes.update({BACKGROUND: addcoords})
+            # -------------------------------------------------------------------------
+
+            # collect all overlapping coordinates
+            allcoords = np.zeros((0, 2))
+            overlap = np.zeros((0, 2))
+            for key in classes:
+                coords = np.float32(classes[key])
+                if allcoords.size > 0:
+                    dist = cdist(coords, allcoords).min(axis=1)
+                    overlap = np.concatenate((overlap, coords[dist < D / 4., :]), 0)
+                    # overlap.extend(coords[dist < D / 4., :])
+                allcoords = np.concatenate((allcoords, coords), 0)
+
+            # remove all overlapping coordinates
+            if overlap.size > 0:
+                # remove only overlapping particles, but not bad/background and junk particles
+                # for key in classes:
+                key = CLEAN
+                coords = np.float32(classes[key])
+                dist = cdist(coords, overlap).min(axis=1)
+                classes[key] = np.delete(coords, np.where(dist <= D / 4.)[0], axis=0).tolist()
+
+                allmicros[micro]['coords'] = classes
+        return allmicros
 
     ##### Overriding functions ########
     def test_example(self,provider):
         print "Generating example frames from the tfrecord ..."
+        featsz  = (cfg.PICK_WIN//cfg.STRIDES[0],)*2
         out_dir = os.path.join(self.tfrecord_dir,'example_ground_truth')
+        ft.rmtree_assure(out_dir)
         ft.mkdir_assure(out_dir)
         keys   = ['image']+self.classes
         data   = provider.get(keys)
@@ -197,7 +281,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                     for i in range(N_EXAMPLES):
                         d = dict(zip(keys, sess.run(data)))
                         im    = d['image']
-                        dd    = dict((k,unravel_coords(d[k],im.shape)) for k in self.classes)
+                        dd    = dict((k,unravel_coords(d[k],featsz)*cfg.STRIDES[0]) for k in self.classes)
                         plot_class_coords(im,dd,cfg.PART_D_PIXELS)
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
@@ -243,12 +327,14 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
     def get_example_keys(self):
         tprint('Converting micrographs to tiles of %d pixels, particle diameter %d pixels ...' % (cfg.PICK_WIN,cfg.PART_D_PIXELS))
         micros = self.allmicros.keys()
-        random.shuffle(micros)
+        # random.shuffle(micros)
         # convert each micro into a set of tiles of cfg.PICK_WIN size
         # the training will run on one tile per record
         keys = []
         for m in micros:
-            sz,bn = calc_micro_pick_shape(m)
+            D     = self.allmicros[m]['part_diameter']
+            psize = self.allmicros[m]['psize']
+            sz,bn = calc_micro_pick_shape(m,D,psize)
             xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
             # create keys using tile coordinates
             for x in xs:
@@ -261,44 +347,61 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                         continue
                     else:
                         keys.append('%s:%d,%d' % (m,x,y))
+
+        # shuffle all example records to sit randomly in shards
+        random.shuffle(keys)
         return keys
 
     def get_example_meta(self):
-        return {'dtype': tf.uint8,'nclasses':len(self.classes),'classes':self.classes}
+        return {'dtype': tf.uint8,
+                'nclasses':len(self.classes),
+                'classes':self.classes,
+                'shape':(cfg.PICK_WIN,)*2}
 
-    # !!
     def key2byte_records(self,key):
         ''' Obtain a record with tile data '''
 
         # extract micrograph name and tile coordinates
         micro   = key.split(':')[0]
         x,y     = np.int32(key.split(':')[1].split(','))
+        fname   = self.allmicros[micro]['resizedname']
+        # D       = self.allmicros[micro]['part_diameter']
+        psize   = self.allmicros[micro]['psize']
+        ctf     = self.allmicros[micro]['ctf']
 
-        im      = mrc.load(micro)[0]
-        szbn,bn = calc_micro_pick_shape(micro)
-
-        psize   = mrc.psize(micro)
-        psizebn = psize*bn
+        imbn,psizebn = mrc.load_psize(fname)
+        imbn    = imbn[0]
+        # szbn,bn = calc_micro_pick_shape(micro,D)
+        # psizebn = mrc.psize(fname)
+        bn      = psizebn/psize
+        # psizebn = psize*bn
+        # processing tile size
         tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
+        # the size of feature map
+        featsz  = (cfg.PICK_WIN//cfg.STRIDES[0],)*2
 
         # resize image
-        imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
+        # imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
         # imbn     = cv2.resize(im,None,fx=1.0/27,fy=1.0/27,interpolation = cv2.INTER_AREA)
         # remove bad pixels
-        imbn     = image.unbad2D(imbn,thresh=10,neib=3)
-        # flip phases
-        imff     = self.allmicros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
+        # imbn     = image.unbad2D(imbn,thresh=10,neib=3)
+
         # cut tile out
-        imt      = imff[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
+        imt      = imbn[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
+        # flip phases
+        imff     = ctf.phase_flip_cpu(imt,psizebn)
         # convert image to uint8
-        im8      = image.float32_to_uint8(imt)
+        im8      = image.float32_to_uint8(imff)
         # save image
         recs     = {IMAGE_KEY:im8.tobytes()}
         ## Save particle coordinates of the tile ##
         tcoords  = self.calc_tile_coords(micro,x,y,bn)
+
         # add coords of all particle types to the record
         for label in self.classes:
-            recs.update({label: ravel_coords(tcoords[label],tilesz).tobytes()})
+            # convert coordinates to feature map dimensions
+            lcoords = np.int32(np.round(np.float32(tcoords[label])/cfg.STRIDES[0]))
+            recs.update({label: ravel_coords(lcoords,featsz).tobytes()})
 
         # save image shape
         recs.update({SHAPE_KEY:np.array(tilesz,dtype=np.int32).tobytes()})
@@ -329,6 +432,12 @@ if __name__ == '__main__':
 
 
 ##   ###### GARBAGE #########
+
+    # def part_d_from_jobfile(jobfile):
+    #     '''Reads particle diameter from jobfile'''
+    #     line = ft.get_line(jobfile, 'Particle diameter')
+    #     return np.float32(line.split('==')[1])
+
 
     # def get_shapebn(self,shape,psize):
     #     bn     = psize2bn(psize)
