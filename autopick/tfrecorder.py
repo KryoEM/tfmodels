@@ -33,7 +33,9 @@ IMAGE_KEY  = 'image/uint8'
 SHAPE_KEY  = 'shape'
 BACKGROUND = 'background'
 CLEAN      = 'clean'
-RESIZE_MICROS = True
+# flags
+RESIZE_MICROS = False
+AUGMENT_BACKGROUND = False
 ##########################
 
 ##
@@ -57,12 +59,10 @@ def path2psize(path):
     line    = ft.get_line(jobfile, 'Magnified pixel size')
     return np.float32(line.split('==')[1])
 
-def calc_micro_pick_shape(micro,D,psize):
+def calc_micro_pick_shape(micro,D_pixels):
     # read particle diameter
-    # part_d = path2part_diameter(micro)
     # calculate binning that brings particle to canonic size
-    # psize = mrc.psize(micro)
-    bn = (D / psize) / cfg.PART_D_PIXELS
+    bn = D_pixels / cfg.PART_D_PIXELS
     # calculate resized window size
     return np.int32(np.round(np.float32(mrc.shape(micro)[1:]) / bn)),bn
 ##
@@ -133,26 +133,21 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         D  = microdict['part_diameter']
         im = mrc.load(micro)[0]
         psize    = microdict['psize']
-        szbn, bn = calc_micro_pick_shape(micro,D,psize)
+        szbn, bn = calc_micro_pick_shape(micro,D)
         psizebn  = psize * bn
         assert(np.all(np.int32(szbn)<np.int32(im.shape)))
         # resize image
         imbn  = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
         # remove bad pixels
         imbn  = image.unbad2D(imbn, thresh=10, neib=3)
-        # flip phases
-        # imff  = microdict['ctf'].phase_flip_cpu(imbn, psizebn)
-        # fname = os.path.join(resizedir, os.path.basename(micro))
         imbn  = image.float32_to_uint8(imbn)
         mrc.save(imbn, microdict['resizedname'], pixel_size=psizebn)
-        # microdict.update({'resizedname': fname})
-        # return microdict
 
     def add_class_coords(self, allmicros, stars, cid):
         for starfile in stars:
             starfile = os.path.realpath(starfile)
-            D      = path2part_diameter(starfile)
             psize  = path2psize((starfile))
+            D      = path2part_diameter(starfile)/psize
             params = parse_particles_star(starfile)
             for micro in params:
                 if not micro in allmicros:
@@ -225,7 +220,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             R = D / 2.
 
             # ------- add background coordinates around each particle ---------------
-            if CLEAN in classes:
+            if CLEAN in classes and AUGMENT_BACKGROUND:
                 clean_coords = np.array(classes[CLEAN])
                 addcoords = []
                 for coord in clean_coords:
@@ -247,10 +242,9 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             for key in classes:
                 coords = np.float32(classes[key])
                 if allcoords.size > 0:
-                    dist = cdist(coords, allcoords).min(axis=1)
+                    dist    = cdist(coords, allcoords).min(axis=1)
                     overlap = np.concatenate((overlap, coords[dist < D / 4., :]), 0)
-                    # overlap.extend(coords[dist < D / 4., :])
-                allcoords = np.concatenate((allcoords, coords), 0)
+                allcoords   = np.concatenate((allcoords, coords), 0)
 
             # remove all overlapping coordinates
             if overlap.size > 0:
@@ -258,8 +252,8 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                 # for key in classes:
                 key = CLEAN
                 coords = np.float32(classes[key])
-                dist = cdist(coords, overlap).min(axis=1)
-                classes[key] = np.delete(coords, np.where(dist <= D / 4.)[0], axis=0).tolist()
+                dist   = cdist(coords, overlap).min(axis=1)
+                classes[key] = np.delete(coords, np.where(dist < D / 4.)[0], axis=0).tolist()
 
                 allmicros[micro]['coords'] = classes
         return allmicros
@@ -333,8 +327,8 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         keys = []
         for m in micros:
             D     = self.allmicros[m]['part_diameter']
-            psize = self.allmicros[m]['psize']
-            sz,bn = calc_micro_pick_shape(m,D,psize)
+            # psize = self.allmicros[m]['psize']
+            sz,bn = calc_micro_pick_shape(m,D)
             xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
             # create keys using tile coordinates
             for x in xs:
