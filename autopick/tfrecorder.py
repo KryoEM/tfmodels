@@ -39,11 +39,14 @@ AUGMENT_BACKGROUND = False
 ##########################
 
 ##
-def ravel_coords(v,sz):
+def ravel_coords_append(v,sz):
     res = np.int64(np.ravel_multi_index(v.transpose(), sz) + 1)
     return np.append(res,np.int64([0,0]))
 
-def unravel_coords(idxs,sz):
+def ravel_coords(v,sz):
+    return np.int64(np.ravel_multi_index(v.transpose(), sz) + 1)
+
+def unravel_coords_append(idxs,sz):
     return np.int32(np.unravel_index(idxs[:-2]-1, sz)).transpose()
 
 def path2part_diameter(path):
@@ -80,6 +83,11 @@ def create_dataset(split_name, data_dir):
     # add handlers for each class coordinates
     for label in coordlabels:
         items_to_handlers.update({label:  DataRaw(label = label, shape=(-1,), dtype=tf.int64)})
+
+    # add indices for coordinate conversions
+    items_to_handlers.update({'dxyidxs': DataRaw(label='dxyidxs', shape=(-1,), dtype=tf.int64)})
+    # add coordinate conversions
+    items_to_handlers.update({'dxy': DataRaw(label='dxy', shape=(-1,2), dtype=tf.float32)})
 
     return dataset_utils.create_dataset(split_name,data_dir,items_to_handlers,dataset_meta)
 
@@ -123,6 +131,19 @@ def parse_particles_star(star_file):
         else:
             micros[key]['coords'].append(coord)
     return micros
+
+def neib_coords(coords,D):
+    ''' Turns each coordinate to a set of coordinates insize a circular mask '''
+    R      = D//2
+    marg   = np.arange(-R, R + 1)
+    dx, dy = np.meshgrid(marg, marg)
+    # leave only coords inside circular masks
+    r      = np.sqrt(dx**2 + dy**2)
+    # exclude center coordinate
+    inloc  = np.logical_and(r <= R, r > 0)
+    dx,dy  = dx[inloc],dy[inloc]
+    # return a list of particle coords
+    return np.int32([c + np.int32(zip(dx,dy)) for c in coords])
 
 ##### DEFINE WRITING DATA #############
 class ParticleCoords2TFRecord(Directory2TFRecord):
@@ -196,11 +217,11 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             print 'Total coordinates in %s \t = %d' % (label2class[label],classcnt[label])
 
         if RESIZE_MICROS:
-            print "Resizing %d micrographs" % len(allmicros)
+            print "Resizing %d micrographs ..." % len(allmicros)
             ft.mkdir_assure(self._resized_micros_dir)
             f = functools.partial(ParticleCoords2TFRecord.preprocess_micro)
             # Sequential
-            # for micro in allmicros: #!!
+            # for micro in allmicros:
             #      f((micro,allmicros[micro]))
             # Parallel
             num_proc = 2 * mp.cpu_count()
@@ -265,7 +286,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         out_dir = os.path.join(self.tfrecord_dir,'example_ground_truth')
         ft.rmtree_assure(out_dir)
         ft.mkdir_assure(out_dir)
-        keys   = ['image']+self.classes
+        keys   = ['image']+self.classes+['dxyidxs','dxy']
         data   = provider.get(keys)
         with tf.Session().as_default() as sess:
             with tf.Graph().as_default():
@@ -275,7 +296,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                     for i in range(N_EXAMPLES):
                         d = dict(zip(keys, sess.run(data)))
                         im    = d['image']
-                        dd    = dict((k,unravel_coords(d[k],featsz)*cfg.STRIDES[0]) for k in self.classes)
+                        dd    = dict((k,unravel_coords_append(d[k],featsz)*cfg.STRIDES[0]) for k in self.classes)
                         plot_class_coords(im,dd,cfg.PART_D_PIXELS)
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
@@ -288,7 +309,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                         plt.close(fig)
 
     def init_feature_keys(self,box_keys=[]):
-        self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY]
+        self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY] + ['dxyidxs','dxy']
 
     def calc_tile_coords(self,micro,x,y,bn):
         ''' calculates particle coordinates in the tile coordinate system '''
@@ -359,26 +380,18 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         micro   = key.split(':')[0]
         x,y     = np.int32(key.split(':')[1].split(','))
         fname   = self.allmicros[micro]['resizedname']
-        # D       = self.allmicros[micro]['part_diameter']
         psize   = self.allmicros[micro]['psize']
         ctf     = self.allmicros[micro]['ctf']
 
         imbn,psizebn = mrc.load_psize(fname)
         imbn    = imbn[0]
-        # szbn,bn = calc_micro_pick_shape(micro,D)
-        # psizebn = mrc.psize(fname)
         bn      = psizebn/psize
-        # psizebn = psize*bn
         # processing tile size
         tilesz  = (cfg.PICK_WIN,cfg.PICK_WIN)
         # the size of feature map
         featsz  = (cfg.PICK_WIN//cfg.STRIDES[0],)*2
-
-        # resize image
-        # imbn     = cv2.resize(im,tuple(szbn[::-1]),interpolation = cv2.INTER_AREA)
-        # imbn     = cv2.resize(im,None,fx=1.0/27,fy=1.0/27,interpolation = cv2.INTER_AREA)
-        # remove bad pixels
-        # imbn     = image.unbad2D(imbn,thresh=10,neib=3)
+        # particle diameter in feature image
+        D       = cfg.PART_D_PIXELS//cfg.STRIDES[0]
 
         # cut tile out
         imt      = imbn[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
@@ -392,10 +405,28 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         tcoords  = self.calc_tile_coords(micro,x,y,bn)
 
         # add coords of all particle types to the record
-        for label in self.classes:
+        for label in self.classes: #!!
             # convert coordinates to feature map dimensions
             lcoords = np.int32(np.round(np.float32(tcoords[label])/cfg.STRIDES[0]))
-            recs.update({label: ravel_coords(lcoords,featsz).tobytes()})
+            recs.update({label: ravel_coords_append(lcoords, featsz).tobytes()})
+
+            if label == CLEAN:
+                # add coordinate corrections in the particle neighborhoods
+                # get all particle coordinate around center coordinates
+                dxycoords = neib_coords(lcoords, D)
+                # get coordnate corrections
+                dxy     = [p - c[None,:] for p,c in zip(dxycoords,lcoords)]
+                dxyidxs = ravel_coords(dxycoords.reshape((-1,2)),featsz)
+                dxy     = np.float32(dxy).reshape((-1,2))
+
+                # obtain overlapping coordinates
+                _,iidxs,counts = np.unique(dxyidxs,return_inverse=True,return_counts=True)
+                novlp_loc   = counts[iidxs] == 1
+
+                # leave ony nonoverlapping particle coordinate corrections dxy
+                dxyidxs,dxy = dxyidxs[novlp_loc],dxy[novlp_loc]
+                recs.update({'dxyidxs': np.append(dxyidxs,np.int64([0,0])).tobytes(),
+                             'dxy':np.append(dxy,np.float32([-1,-1])).tobytes()})
 
         # save image shape
         recs.update({SHAPE_KEY:np.array(tilesz,dtype=np.int32).tobytes()})
