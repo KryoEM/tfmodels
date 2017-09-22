@@ -11,8 +11,6 @@ from   fileio import mrc
 from   joblib import Parallel, delayed
 # import multiprocessing as mp
 import random
-from   star import star
-from   ctf  import CTF
 import cv2
 from   myplotlib import imshow,clf
 from   matplotlib import pyplot as plt
@@ -23,6 +21,7 @@ from   utils import tprint
 import functools
 import multiprocessing as mp
 from   multiprocessing.dummy import Pool as ThreadPool
+from   relion_params import path2psize,parse_particles_star,path2part_diameter
 
 slim   = tf.contrib.slim
 
@@ -49,25 +48,6 @@ def ravel_coords(v,sz):
 def unravel_coords_append(idxs,sz):
     return np.int32(np.unravel_index(idxs[:-2]-1, sz)).transpose()
 
-def path2part_diameter(path):
-    ''' Read particle diameter from manual picking job '''
-    jobfile = os.path.join(ft.updirs(path, 2), '.gui_manualpickrun.job')
-    line    = ft.get_line(jobfile, 'Particle diameter')
-    return np.float32(line.split('==')[1])
-    # return part_d_from_jobfile(jobfile)
-
-def path2psize(path):
-    ''' Read particle diameter from manual picking job '''
-    jobfile = os.path.join(ft.updirs(path, 2), '.gui_ctffindrun.job')
-    line    = ft.get_line(jobfile, 'Magnified pixel size')
-    return np.float32(line.split('==')[1])
-
-def calc_micro_pick_shape(micro,D_pixels):
-    # read particle diameter
-    # calculate binning that brings particle to canonic size
-    bn = D_pixels / cfg.PART_D_PIXELS
-    # calculate resized window size
-    return np.int32(np.round(np.float32(mrc.shape(micro)[1:]) / bn)),bn
 ##
 
 def create_instance(*args,**kwargs):
@@ -94,6 +74,13 @@ def create_dataset(split_name, data_dir):
 def psize2bn(psize):
     return 2.0 * psize / cfg.RPN_RES
 
+def calc_micro_pick_shape(micro,D_pixels):
+    # read particle diameter
+    # calculate binning that brings particle to canonic size
+    bn = D_pixels / cfg.PART_D_PIXELS
+    # calculate resized window size
+    return np.int32(np.round(np.float32(mrc.shape(micro)[1:]) / bn)),bn
+
 def plot_class_coords(im,class_coords,d):
     ax  = plt.subplot()
     vmn = np.percentile(im, 1)
@@ -115,22 +102,6 @@ def plot_class_coords(im,class_coords,d):
         idx  += 1
         ax.axis((0, im.shape[1], im.shape[0], 0))
     ax.set_title("%s = %s" % (cstr[:-1],classes[:-1]))
-
-def parse_particles_star(star_file):
-    # here we also convert oringinal micrograph location to a phase flipped micrograph location
-    # get path of phase flipped micrographs
-    ajob = os.path.dirname(os.path.realpath(star_file))
-    root = os.path.abspath(os.path.join(ajob,'../..'))
-    recs = star.starFromPath(star_file).readLines()
-    micros = {}
-    for rec in recs:
-        key = os.path.join(root,rec['MicrographName'])
-        coord = [float(rec['CoordinateX']),float(rec['CoordinateY'])]
-        if not key in micros:
-            micros.update({key:{'coords':[coord],'ctf':CTF(**rec)}})
-        else:
-            micros[key]['coords'].append(coord)
-    return micros
 
 def neib_coords(coords,D):
     ''' Turns each coordinate to a set of coordinates insize a circular mask '''
@@ -167,7 +138,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
     def add_class_coords(self, allmicros, stars, cid):
         for starfile in stars:
             starfile = os.path.realpath(starfile)
-            psize  = path2psize((starfile))
+            psize  = path2psize(starfile,'Select')
             D      = path2part_diameter(starfile)/psize
             params = parse_particles_star(starfile)
             for micro in params:
@@ -184,6 +155,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
     def __init__(self,data_in_dir,data_out_dir):
 
         super(ParticleCoords2TFRecord, self).__init__(data_in_dir,data_out_dir)
+
         self._resized_micros_dir = os.path.join(ft.updirs(data_in_dir+'/',1), 'ResizedMicrographs')
 
         # each subdirectory in data_in_dir corresponds to a separate class
@@ -348,7 +320,6 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         keys = []
         for m in micros:
             D     = self.allmicros[m]['part_diameter']
-            # psize = self.allmicros[m]['psize']
             sz,bn = calc_micro_pick_shape(m,D)
             xs,ys = image.tile2D(sz,(cfg.PICK_WIN,)*2,0.0)
             # create keys using tile coordinates

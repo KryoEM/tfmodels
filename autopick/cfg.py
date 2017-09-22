@@ -22,3 +22,8 @@ N_CLS_AUX_CHANNELS = 4
 # focus loss function parameter
 # GAMMA         = 0.0
 
+# probability threshold for particle detection
+PROB_THRESH  = 0.95
+# how many locations in the perimeter match single particle hypothesis
+PERIM_THRESH = 0.5
+

@@ -294,6 +294,10 @@ class AutopickModel(Model):
 
         return dict(zip(keys,databatch))
 
+    def data_single(self,image):
+        image = self._image_preprocessing_test(image)
+        return  tf.expand_dims(image,axis=0)
+
     def add_loss_and_metrics_train(self,data,logits,end_point_collection):
         rpn_loss, dxy_loss, cls_loss = self.scores2losses(logits,data,scope='rpn_head')
         loss = rpn_loss + dxy_loss + cls_loss
