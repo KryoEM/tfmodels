@@ -5,7 +5,7 @@ import numpy as np
 # from PIL import Image, ImageDraw, ImageFont, ImageOps
 from arg_parsing import load_config
 from gpu import pick_gpus_lowest_memory
-from myplotlib import imshow,clf
+from myplotlib import imshow,clf,savefig
 from rpn.generate_anchors import generate_anchors
 from rpn.bbox.bbox_transform import bbox_transform_inv,sized_to_4coords,revert_xy
 from matplotlib import pyplot as plt
@@ -19,8 +19,8 @@ import image
 import cv2
 import utils
 from   skimage.measure import label,regionprops
-
-# import glob
+from   tfrecorder import plot_class_coords
+from   star.tools import save_coords_in_star
 
 from autopick import cfg
 
@@ -60,7 +60,6 @@ def _load_checkpoint():
     # load model
     ckpt_path = ckpt.model_checkpoint_path
     saver     = tf.train.Saver()
-    # saver = tf.train.import_meta_graph(ckpt_path+'.meta',clear_devices=True)
     saver.restore(sess, ckpt_path)
 
 def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
@@ -108,41 +107,45 @@ def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
         cmap.flat[offidxs] = 0
     return cmap
 
-def image_generator(ctfstar):
-    micros = parse_ctf_star(ctfstar)
-    psize  = path2psize(ctfstar,'CtfFind')
-    # particle diameter in pixels
-    D      = path2part_diameter(ctfstar) / psize
-    # calcualte micrographs binning factor
-    bn     = D / cfg.PART_D_PIXELS
-    psizebn = psize*bn
-    for micro in micros:
-        im      = mrc.load(micro)[0]
-        szbn    = utils.np.int32(np.round(np.float32(im.shape) / bn))
-        imbn    = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
-        szcrop  = utils.prevmult(szbn,128)
-        imcrop  = image.crop2D(imbn,szcrop)
-        # remove bad pixels
-        imcrop = image.unbad2D(imcrop, thresh=10, neib=3)
-        imff   = micros[micro]['ctf'].phase_flip_cpu(imcrop, psizebn)
-        # add one channel
-        imff   = imff.reshape(imff.shape+(1,))
-        yield(imff)
-##
+def preprocess_micro(imbn,ctf,psizebn):
+    szcrop  = utils.prevmult(szbn, 128)
+    imcrop  = image.crop2D(imbn, szcrop)
+    # remove bad pixels
+    imcrop  = image.unbad2D(imcrop, thresh=5, neib=3)
+    imff    = ctf.phase_flip_cpu(imcrop, psizebn)
+    # add one channel
+    return imff.reshape(imff.shape + (1,))
+
+def adjust_coodinates(coords,srcsz,dstsz,bn,stride):
+    '''Adjust coordinates from cropped feature plane to match the original image coordinates '''
+    unpadl = (dstsz - srcsz*stride) // 2
+    coords = coords*stride + unpadl[None,:]
+    return coords*bn
 
 ctfstar = '/jasper/result/GPCR_GI/CtfFind/job002/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Nucleosome_20170427_1821/CtfFind/job005/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Braf_20170526_1206/CtfFind/job007/micrographs_ctf.star'
 
+outdir  = '/jasper/result/GPCR_GI/cnnpick/'
+ft.rmtree_assure(outdir)
+ft.mkdir_assure(outdir)
 
-savpath = FLAGS.output_dir
+
+# savpath = FLAGS.output_dir
 # clean result directory
-ft.rmtree_assure(savpath)
-ft.mkdir_assure(savpath)
 
-im_gen = image_generator(ctfstar)
-# im = image_generator(ctfstar)
+####### Read Relion jobs infor and prepare picking params ########
+micros = parse_ctf_star(ctfstar)
+psize  = path2psize(ctfstar, 'CtfFind')
+# particle diameter in pixels
+D      = path2part_diameter(ctfstar) / psize
+# calcualte micrographs binning factor
+bn     = D / cfg.PART_D_PIXELS
+psizebn = psize * bn
+outmicrodir = os.path.join(outdir,os.path.basename(os.path.dirname(micros.iterkeys().next())))
+ft.mkdir_assure(outmicrodir)
 
+##################################################################
 with tf.Graph().as_default() as g:
     with g.device(FLAGS.eval_device):
         tf_global_step = slim.get_or_create_global_step()
@@ -161,70 +164,125 @@ with tf.Graph().as_default() as g:
             rpn_score = logits['rpn_score']
             dxy_pred  = logits['dxy_pred']
             cls_score = logits['cls_score']
-            rpn_prob  = tf.nn.softmax(rpn_score, name='rpn_prob') #[...,cleanidx]
+            rpn_prob  = tf.nn.softmax(rpn_score, name='rpn_prob')
             cls_prob  = tf.nn.softmax(cls_score, name='cls_prob')[...,1]
 
             _load_checkpoint()
 
+            # apply CNN detection on properly rescaled image
+            for micro in micros:
+                # read orogonal micrograph
+                im   = mrc.load(micro)[0]
+                szbn = utils.np.int32(np.round(np.float32(im.shape) / bn))
+                imbn = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
+
+                # convert micrograph to pickable size
+                imff = preprocess_micro(imbn,micros[micro]['ctf'],psizebn)
+
+                cls_prob_py,rpn_prob_py,dxy_pred_py,im_py = sess.run([cls_prob,rpn_prob,dxy_pred,data['image']],feed_dict={images:imff})
+                pmap   = calc_single_score_per_particle(cls_prob_py[0],rpn_prob_py[0,...,cleanidx],dxy_pred_py[0])
+
+                # particle coordinates in the original micrograph coordinates
+                coords = np.column_stack(np.where(pmap))
+
+                # imff coordinate system for display
+                coords_imff = adjust_coodinates(coords,np.int32(pmap.shape),np.int32(imff.shape[:2]),1,cfg.STRIDES[0])
+                # original micrograph coordinate system
+                coords_orig = adjust_coodinates(coords,np.int32(pmap.shape),szbn,bn,cfg.STRIDES[0])
+
+                starname = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
+                # dstmrc   = os.path.join(outmicrodir, ft.file_only(micro) + '.mrc')
+                save_coords_in_star(starname,coords_orig)
+                print "Found %d particles in %s, saving in %s" % (coords_orig.shape[0],micro,starname)
+                # link to original micrograph
+                # os.symlink(micro,dstmrc)
+
+                # imbnff = micros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
+                # clf()
+                #### SAVE figure as well ######
+                figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
+                plot_class_coords(np.squeeze(imff),{'particles':coords_imff},cfg.PART_D_PIXELS)
+                savefig(plt.gcf(),figname)
+                plt.close(plt.gcf())
+
+############## GARBAGE #################################
+            # suffname = os.path.join(outdir,'coords_suffix_cnnpick.star')
+            # with open(suffname, 'w') as sufffile:
+            #     sufffile.write(ctfstar)
+
+
+            # echo       CtfFind / job008 / micrographs_ctf.star > AutoPick / job023 / coords_suffix_autopick.star
+
+            # clf()
+            # imshow(pscore)
+            # imshow(imff)
+            # pass
+
             # coord   = tf.train.Coordinator()
             # threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-            # apply CNN detection on properly rescaled image
-            for micro in im_gen:
-                im_py,cls_prob_py,rpn_prob_py,dxy_pred_py = sess.run([data['image'],cls_prob,rpn_prob,dxy_pred],feed_dict={images:micro})
-                pscore = calc_single_score_per_particle(cls_prob_py[0],rpn_prob_py[0,...,cleanidx],dxy_pred_py[0])
+    # szbn = np.int32(bw.shape)
+    # imbn = cv2.resize(im_py[0,:,:,0], tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
+    #
+    # image_py = sess.run(images,feed_dict={images:im_gen.next()})
+    # # d_py,logits_py = sess.run([data,logits],feed_dict=feed_dict)
+    # # create image overlay for each images in the batch
+    # #for b in range(d_py['image'].shape[0]):
+    # b = 0
+    # ax = plt.subplot()
+    # show_image(ax, np.squeeze(d_py['image'][b,:,:,0]))
+    # # show results for all scales
+    # for scale_keys in scale_key_sets:
+    #     rpn_prob      = rpn_probs_py[scale_keys['rpn_prob']]
+    #     rpn_bbox_pred = logits_py[scale_keys['rpn_bbox_pred']]
+    #     bn   = d_py['image'].shape[1]/rpn_prob.shape[1]
+    #     bbox = revert_xy(get_predicted_bboxes(rpn_prob, rpn_bbox_pred)[b])
+    #     # obtain ground truth
+    #     gtbox = sized_to_4coords(col_set_diff(d_py['object'], [[0,0,0,0]]))
+    #     igbox = sized_to_4coords(col_set_diff(d_py['ignore'], [[0,0,0,0]]))
+    #     plot_boxes(ax, gtbox, color='b')
+    #     plot_boxes(ax, igbox, color='k')
+    #     plot_boxes(ax, bbox*bn, color='g',linewidth=2)
+    #     ax.set_title("g,b,k - detected,gt,ignore")
+    #
+    # fname = ft.file_only(d_py['image_name'].tobytes())
+    # fname = os.path.join(savpath, 'result_%s.png' % fname)
+    # fig   = plt.gcf()
+    # fig.set_figheight(20.0)
+    # fig.set_figwidth(26.0)
+    # fig.subplots_adjust(wspace=.1, hspace=0.2, left=0.03, right=0.98, bottom=0.05, top=0.93)
+    # print "Saving %s ..." % fname
+    # fig.savefig(fname)
+    # plt.close(fig)
 
-                clf()
-                imshow(pscore)
-                imshow(im_py[0,:,:,0])
-                pass
+    # clf()
 
-                # szbn = np.int32(bw.shape)
-                # imbn = cv2.resize(im_py[0,:,:,0], tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
-                #
-                # image_py = sess.run(images,feed_dict={images:im_gen.next()})
-                # # d_py,logits_py = sess.run([data,logits],feed_dict=feed_dict)
-                # # create image overlay for each images in the batch
-                # #for b in range(d_py['image'].shape[0]):
-                # b = 0
-                # ax = plt.subplot()
-                # show_image(ax, np.squeeze(d_py['image'][b,:,:,0]))
-                # # show results for all scales
-                # for scale_keys in scale_key_sets:
-                #     rpn_prob      = rpn_probs_py[scale_keys['rpn_prob']]
-                #     rpn_bbox_pred = logits_py[scale_keys['rpn_bbox_pred']]
-                #     bn   = d_py['image'].shape[1]/rpn_prob.shape[1]
-                #     bbox = revert_xy(get_predicted_bboxes(rpn_prob, rpn_bbox_pred)[b])
-                #     # obtain ground truth
-                #     gtbox = sized_to_4coords(col_set_diff(d_py['object'], [[0,0,0,0]]))
-                #     igbox = sized_to_4coords(col_set_diff(d_py['ignore'], [[0,0,0,0]]))
-                #     plot_boxes(ax, gtbox, color='b')
-                #     plot_boxes(ax, igbox, color='k')
-                #     plot_boxes(ax, bbox*bn, color='g',linewidth=2)
-                #     ax.set_title("g,b,k - detected,gt,ignore")
-                #
-                # fname = ft.file_only(d_py['image_name'].tobytes())
-                # fname = os.path.join(savpath, 'result_%s.png' % fname)
-                # fig   = plt.gcf()
-                # fig.set_figheight(20.0)
-                # fig.set_figwidth(26.0)
-                # fig.subplots_adjust(wspace=.1, hspace=0.2, left=0.03, right=0.98, bottom=0.05, top=0.93)
-                # print "Saving %s ..." % fname
-                # fig.savefig(fname)
-                # plt.close(fig)
+    # ax.set_title("%s = %s" % (cstr[:-1], classes[:-1]))
 
-                # clf()
-            # ax.set_title("%s = %s" % (cstr[:-1], classes[:-1]))
-############## GARBAGE #################################
-
-            # rpn_probs = {}
-            # for scale_keys in scale_key_sets:
-            #     rpn_probs.update({scale_keys['rpn_prob']:model.score2prob(logits[scale_keys['rpn_score']])})
+    # im_gen = image_generator(ctfstar)
+    # im = image_generator(ctfstar)
 
 
-            # clf()
-                # imshow(d_py['image'][-1])
-                # imshow(rpn_prob_py[-1,:,:].max(axis=2))
+    # def image_generator(ctfstar):
+    #     micros = parse_ctf_star(ctfstar)
+    #     psize  = path2psize(ctfstar,'CtfFind')
+    #     # particle diameter in pixels
+    #     D      = path2part_diameter(ctfstar) / psize
+    #     # calcualte micrographs binning factor
+    #     bn     = D / cfg.PART_D_PIXELS
+    #     for micro in micros:
+    #         im      = mrc.load(micro)[0]
+    #         yield(imff)
+    ##
+
+    # rpn_probs = {}
+    # for scale_keys in scale_key_sets:
+    #     rpn_probs.update({scale_keys['rpn_prob']:model.score2prob(logits[scale_keys['rpn_score']])})
+
+
+    # clf()
+        # imshow(d_py['image'][-1])
+        # imshow(rpn_prob_py[-1,:,:].max(axis=2))
 ##
 # def get_predicted_bboxes(rpn_prob_py, rpn_bbox_pred_py):
 #     _anchors = generate_anchors(base_size=cfg.ANCHOR_STRIDE_FACTOR,

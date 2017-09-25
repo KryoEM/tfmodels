@@ -12,7 +12,7 @@ from   joblib import Parallel, delayed
 # import multiprocessing as mp
 import random
 import cv2
-from   myplotlib import imshow,clf
+from   myplotlib import imshow,clf,savefig
 from   matplotlib import pyplot as plt
 from   scipy.spatial.distance import cdist
 from   autopick import cfg
@@ -33,7 +33,7 @@ SHAPE_KEY  = 'shape'
 BACKGROUND = 'background'
 CLEAN      = 'clean'
 # flags
-RESIZE_MICROS = False
+RESIZE_MICROS = True
 AUGMENT_BACKGROUND = False
 ##########################
 
@@ -131,7 +131,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         # resize image
         imbn  = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
         # remove bad pixels
-        imbn  = image.unbad2D(imbn, thresh=10, neib=3)
+        imbn  = image.unbad2D(imbn, thresh=5, neib=3)
         imbn  = image.float32_to_uint8(imbn)
         mrc.save(imbn, microdict['resizedname'], pixel_size=psizebn)
 
@@ -166,6 +166,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         allmicros   = {}
         for d in range(len(topdirs)):
             cid = topdirs[d].tostring()
+            tprint("Listing directory %s ..." % d)
             class2label.update({cid:d})
             label2class.update({d:cid})
             # get all star files with particle coordinates for this class
@@ -176,6 +177,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         self.classes = class2label.keys()
         self.init_feature_keys(self.classes)
         # here allmicros has particle coordinates for each class per micrograph
+        tprint("Removing particle overlaping in different classes ...")
         allmicros   = ParticleCoords2TFRecord.remove_class_overlap(allmicros)
 
         # count all particles
@@ -273,12 +275,13 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
                         print "saving example %s, %d out of %d" % (fname,i,N_EXAMPLES)
-                        plt.gcf().set_figheight(10.0)
-                        plt.gcf().set_figwidth(10.0)
-                        fig = plt.gcf()
-                        fig.subplots_adjust(wspace=.1, hspace=0.2, left=0.03, right=0.98, bottom=0.05, top=0.93)
-                        fig.savefig(fname)
-                        plt.close(fig)
+                        savefig(plt.gcf(),fname)
+                        # plt.gcf().set_figheight(10.0)
+                        # plt.gcf().set_figwidth(10.0)
+                        # fig = plt.gcf()
+                        # fig.subplots_adjust(wspace=.1, hspace=0.2, left=0.03, right=0.98, bottom=0.05, top=0.93)
+                        # fig.savefig(fname)
+                        plt.close(plt.gcf())
 
     def init_feature_keys(self,box_keys=[]):
         self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY] + ['dxyidxs','dxy']

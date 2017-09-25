@@ -22,7 +22,7 @@ def parse_particles_star(star_file):
     recs   = star.starFromPath(star_file).readLines()
     micros = {}
     # obtain path to original micrograph
-    root   = ft.updirs(ajob,JOB2UPDIRS['Select']) #os.path.abspath(os.path.join(ajob,'../..'))
+    root   = ft.updirs(ajob+'/',JOB2UPDIRS['Select']) #os.path.abspath(os.path.join(ajob,'../..'))
     for rec in recs:
         key = os.path.join(root,rec['MicrographName'])
         coord = [float(rec['CoordinateX']),float(rec['CoordinateY'])]

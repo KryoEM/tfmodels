@@ -101,7 +101,9 @@ class AutopickModel(Model):
             # rpn_prob_reshape  = tf.reshape(rpn_prob, [-1, nclasses])
 
             # ##### SUMMARY ###########
-            tf.summary.image('zinput_image', tf.expand_dims(data['image'][-1, :, :, :1], axis=0))
+            # bin the image to match the feature channel
+            imbn = tf.image.resize_images(data['image'],tf.cast(tf.shape(data['image'])[1:3]/tf.constant(2,dtype=tf.int32),tf.int32))
+            tf.summary.image('zinput_image', tf.expand_dims(imbn[-1, :, :, :1], axis=0))
 
             # collect foreground scores
             rpn_loss = 0.0
@@ -320,7 +322,7 @@ class AutopickModel(Model):
 
     def _preprocess_common(self,image):
         image = tf.cast(image, tf.float32)
-        # image -= tf.reduce_mean(image)
+        image -= tf.reduce_mean(image)
         image = tf.image.per_image_standardization(image)
         # tf.summary.image('initial_image', tf.expand_dims(image, 0))
         return image
