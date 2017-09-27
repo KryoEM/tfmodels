@@ -23,7 +23,7 @@ N_CLS_AUX_CHANNELS = 4
 # GAMMA         = 0.0
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.95
+PROB_THRESH  = 0.98
 # how many locations in the perimeter match single particle hypothesis
 PERIM_THRESH = 0.5
 

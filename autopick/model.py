@@ -40,9 +40,9 @@ class AutopickModel(Model):
             rpn_conv = enet(rpn_conv, depth // DD, depth, scope='rpn_conv_1', reuse=reuse)
 
             # score for classification
-            rpn_score = slim.conv2d(rpn_conv, nclasses, [1, 1], activation_fn=None, scope='rpn_cls_score',reuse=reuse)
+            rpn_score = slim.conv2d(rpn_conv, nclasses, [1, 1], activation_fn=None,normalizer_fn=None, scope='rpn_cls_score',reuse=reuse)
             # coordinate correction prediction
-            dxy_pred  = slim.conv2d(rpn_conv, 2, [1, 1], activation_fn=None, scope='dxy_pred',reuse=reuse)
+            dxy_pred  = slim.conv2d(rpn_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='dxy_pred',reuse=reuse)
             # auxilliary channels for classification
             cls_aux   = slim.conv2d(rpn_conv, cfg.N_CLS_AUX_CHANNELS, [1, 1], scope='cls_aux',reuse=reuse)
 
@@ -55,7 +55,7 @@ class AutopickModel(Model):
             cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_1', reuse=reuse)
             cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_2', reuse=reuse)
             cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_3', reuse=reuse)
-            cls_score = slim.conv2d(cls_conv, 2, [1, 1], activation_fn=None, scope='cls_score',reuse=reuse)
+            cls_score = slim.conv2d(cls_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='cls_score',reuse=reuse)
             return rpn_score,dxy_pred,cls_score
 
     @staticmethod
@@ -80,14 +80,17 @@ class AutopickModel(Model):
                                                validate_indices=False),pshape[:-1])
         return labels
 
-    def scores2losses(self,logits, data, reuse=False, scope=''):
-        rpn_score = logits['rpn_score']
-        dxy_pred  = logits['dxy_pred']
-        cls_score = logits['cls_score']
+    def scores2losses(self,logits, data, scope=''):
+        # with tf.name_scope(scope_name) as scope:
+        #     pass
+        with tf.name_scope(scope):
+            rpn_score = logits['rpn_score']
+            dxy_pred  = logits['dxy_pred']
+            cls_score = logits['cls_score']
 
-        nclasses = self._dataset.example_meta['nclasses']
-        classes  = self._dataset.example_meta['classes']
-        with tf.variable_scope(scope, reuse=reuse):
+            nclasses = self._dataset.example_meta['nclasses']
+            classes  = self._dataset.example_meta['classes']
+            # with tf.variable_scope(scope, reuse=reuse):
             # ========= RoI Proposal ============
             im_shape = tf.cast(tf.shape(rpn_score)[:-1], tf.int64)
 
@@ -124,6 +127,7 @@ class AutopickModel(Model):
 
                 # ##### SUMMARY ###########
                 # create labels -needed for summary only
+
                 dsp_labels = tf.cast(AutopickModel.labels_for_display(rpn_prob, imidxs), tf.float32)
                 tf.summary.image(c + '_label', tf.expand_dims(tf.expand_dims(dsp_labels[-1], axis=0), axis=3),max_outputs=1000)
                 if c == 'clean':
@@ -192,12 +196,12 @@ class AutopickModel(Model):
             with slim.arg_scope([prelu],alpha_decay=ALPHA_DECAY) as sc:
                 return sc
 
-    def network(self,data,is_training=False,**kwargs):
+    def network(self,data,is_training=False,reuse=None,**kwargs):
 
         images   = data['image']
         nclasses = self._dataset.example_meta['nclasses']
         with slim.arg_scope(self.arg_scope(is_training,**kwargs)):
-            with tf.variable_scope('autopick', values=data) as sc:
+            with tf.variable_scope('autopick', values=data, reuse=reuse) as sc:
                 end_point_collection = sc.original_name_scope + '_end_points'
                 with slim.arg_scope([slim.conv2d,slim.fully_connected,slim.max_pool2d,
                                      enet, enet_pool, enet_unpool],

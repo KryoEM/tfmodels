@@ -55,7 +55,7 @@ else:
     device = '/cpu:0'
 
 ##
-def _load_checkpoint():
+def _load_checkpoint(sess):
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
     # load model
     ckpt_path = ckpt.model_checkpoint_path
@@ -147,63 +147,66 @@ ft.mkdir_assure(outmicrodir)
 
 ##################################################################
 with tf.Graph().as_default() as g:
+    model    = Model.create_instance(FLAGS.model_path, 'test', FLAGS.tfrecord_dir)
+    classes  = model._dataset.example_meta['classes']
+    cleanidx = classes.index('clean')
+
     with g.device(FLAGS.eval_device):
-        tf_global_step = slim.get_or_create_global_step()
-        model    = Model.create_instance(FLAGS.model_path, 'test', FLAGS.tfrecord_dir)
-        classes  = model._dataset.example_meta['classes']
-        cleanidx = classes.index('clean')
+        with tf.name_scope('inputs'):
+        # tf_global_step = slim.get_or_create_global_step()
+            images = tf.placeholder(tf.float32, shape=(None, None, 1))
+            data = {'image': model.data_single(images)}
 
-        sess_config = tf.ConfigProto(allow_soft_placement=True)
-        with tf.Session(config=sess_config) as sess:
+    # needs to be is_training=False, but not working due to some bug
+    # shall be resolved after updates/upgrades
+    logits, end_points = model.network(data, is_training=True)
 
-            images = tf.placeholder(tf.float32,shape=(None,None,1))
-            data   = {'image':model.data_single(images)}
+    rpn_score = logits['rpn_score']
+    dxy_pred  = logits['dxy_pred']
+    cls_score = logits['cls_score']
+    rpn_prob  = tf.nn.softmax(rpn_score, name='rpn_prob')
+    cls_prob  = tf.nn.softmax(cls_score, name='cls_prob')[..., 1]
 
-            logits, end_points = model.network(data, is_training=False)
+    glob_init = tf.global_variables_initializer()
+    loc_init  = tf.local_variables_initializer()
+    sess_config = tf.ConfigProto(allow_soft_placement=True)
+    with tf.Session(config=sess_config) as sess:
+        sess.run(loc_init)
+        sess.run(glob_init)
+        _load_checkpoint(sess)
 
-            rpn_score = logits['rpn_score']
-            dxy_pred  = logits['dxy_pred']
-            cls_score = logits['cls_score']
-            rpn_prob  = tf.nn.softmax(rpn_score, name='rpn_prob')
-            cls_prob  = tf.nn.softmax(cls_score, name='cls_prob')[...,1]
+        # apply CNN detection on properly rescaled image
+        for micro in micros:
+            # read orogonal micrograph
+            im   = mrc.load(micro)[0]
+            szbn = utils.np.int32(np.round(np.float32(im.shape) / bn))
+            imbn = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
 
-            _load_checkpoint()
+            # convert micrograph to pickable size
+            imff = preprocess_micro(imbn,micros[micro]['ctf'],psizebn)
 
-            # apply CNN detection on properly rescaled image
-            for micro in micros:
-                # read orogonal micrograph
-                im   = mrc.load(micro)[0]
-                szbn = utils.np.int32(np.round(np.float32(im.shape) / bn))
-                imbn = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
+            cls_prob_py,rpn_prob_py,dxy_pred_py,im_py = sess.run([cls_prob,rpn_prob,dxy_pred,data['image']],feed_dict={images:imff})
+            pmap   = calc_single_score_per_particle(cls_prob_py[0],rpn_prob_py[0,...,cleanidx],dxy_pred_py[0])
 
-                # convert micrograph to pickable size
-                imff = preprocess_micro(imbn,micros[micro]['ctf'],psizebn)
+            # particle coordinates in the original micrograph coordinates
+            coords = np.column_stack(np.where(pmap))
 
-                cls_prob_py,rpn_prob_py,dxy_pred_py,im_py = sess.run([cls_prob,rpn_prob,dxy_pred,data['image']],feed_dict={images:imff})
-                pmap   = calc_single_score_per_particle(cls_prob_py[0],rpn_prob_py[0,...,cleanidx],dxy_pred_py[0])
+            # imff coordinate system for display
+            coords_imff = adjust_coodinates(coords,np.int32(pmap.shape),np.int32(imff.shape[:2]),1,cfg.STRIDES[0])
+            # original micrograph coordinate system
+            coords_orig = adjust_coodinates(coords,np.int32(pmap.shape),szbn,bn,cfg.STRIDES[0])
 
-                # particle coordinates in the original micrograph coordinates
-                coords = np.column_stack(np.where(pmap))
+            starname = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
+            # dstmrc   = os.path.join(outmicrodir, ft.file_only(micro) + '.mrc')
+            save_coords_in_star(starname,coords_orig)
+            print "Found %d particles in %s, saving in %s" % (coords_orig.shape[0],micro,starname)
 
-                # imff coordinate system for display
-                coords_imff = adjust_coodinates(coords,np.int32(pmap.shape),np.int32(imff.shape[:2]),1,cfg.STRIDES[0])
-                # original micrograph coordinate system
-                coords_orig = adjust_coodinates(coords,np.int32(pmap.shape),szbn,bn,cfg.STRIDES[0])
+            #### SAVE figure as well ######
+            figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
+            plot_class_coords(np.squeeze(imff),{'particles':coords_imff},cfg.PART_D_PIXELS)
 
-                starname = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
-                # dstmrc   = os.path.join(outmicrodir, ft.file_only(micro) + '.mrc')
-                save_coords_in_star(starname,coords_orig)
-                print "Found %d particles in %s, saving in %s" % (coords_orig.shape[0],micro,starname)
-                # link to original micrograph
-                # os.symlink(micro,dstmrc)
-
-                # imbnff = micros[micro]['ctf'].phase_flip_cpu(imbn,psizebn)
-                # clf()
-                #### SAVE figure as well ######
-                figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
-                plot_class_coords(np.squeeze(imff),{'particles':coords_imff},cfg.PART_D_PIXELS)
-                savefig(plt.gcf(),figname)
-                plt.close(plt.gcf())
+            savefig(plt.gcf(),figname)
+            plt.close(plt.gcf())
 
 ############## GARBAGE #################################
             # suffname = os.path.join(outdir,'coords_suffix_cnnpick.star')

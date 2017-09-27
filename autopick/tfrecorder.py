@@ -83,6 +83,7 @@ def calc_micro_pick_shape(micro,D_pixels):
 
 def plot_class_coords(im,class_coords,d):
     ax  = plt.subplot()
+    plt.ion()
     vmn = np.percentile(im, 1)
     vmx = np.percentile(im, 99)
     ax.imshow(im, vmin=vmn, vmax=vmx, cmap=plt.cm.gray)
@@ -102,6 +103,9 @@ def plot_class_coords(im,class_coords,d):
         idx  += 1
         ax.axis((0, im.shape[1], im.shape[0], 0))
     ax.set_title("%s = %s" % (cstr[:-1],classes[:-1]))
+    plt.draw()
+    plt.pause(0.001)
+
 
 def neib_coords(coords,D):
     ''' Turns each coordinate to a set of coordinates insize a circular mask '''
