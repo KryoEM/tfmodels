@@ -68,6 +68,21 @@ def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
        cls_prob - probability that this particle is isolated
        rpn_prob - probability that there is a particle
        dxy_pred - predicted location corrections around the particle'''
+
+    # particle size in feature map
+    D = cfg.PART_D_PIXELS/cfg.STRIDES[0]
+
+    # zero boundaries
+    rpn_prob = image.zero_border(rpn_prob,D//2)
+    cls_prob = image.zero_border(cls_prob,D//2)
+
+    # check rpn_prob for problems
+    regions  = regionprops(label(rpn_prob > cfg.PROB_THRESH))
+    areas = np.int32([r['Area'] for r in regions])
+    if np.any(areas > D**2):
+        print "Something wrong with micrograph - too large response, skipping ..."
+        rpn_prob[:] = 0.0
+
     bw = np.logical_and(cls_prob >= cfg.PROB_THRESH, rpn_prob >= cfg.PROB_THRESH)
     # predicted distance from partice
     dxy = np.sqrt(np.sum(dxy_pred ** 2, axis=2))
@@ -82,21 +97,24 @@ def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
     # obtain cmap with score that describes how is the particle isolated from neighbors values in [0,1]
     bwsz = bw.shape
     cmap = np.zeros(bwsz, np.float32)
+    # obtain circle locations
     hx, hy = np.where(H)
     xs, ys = np.where(bw)
     rh = r.flat[np.ravel_multi_index([hx, hy], H.shape)]
     for x, y in zip(xs, ys):
         xhx = np.minimum(np.maximum(hx + x - fr - 1, 0), bwsz[0] - 1)
         yhy = np.minimum(np.maximum(hy + y - fr - 1, 0), bwsz[1] - 1)
+        # normalize distances by the corresponding radius
+        dn  = (dxy.flat[np.ravel_multi_index([xhx, yhy], bwsz)] - dxy[x, y]) / rh
         # calc mean normalized radius
-        pmean = np.mean((dxy.flat[np.ravel_multi_index([xhx, yhy], bwsz)] - dxy[x, y]) / rh)
-        # count how many pixels exceed half of the expected radius
-        pcount = np.sum(dxy.flat[np.ravel_multi_index([xhx, yhy], bwsz)] - dxy[x, y] >= rh / 2.0) / float(rh.size)
-        cmap[x, y] = pcount * pmean
+        #pmean = dn.mean() #np.mean((dxy.flat[np.ravel_multi_index([xhx, yhy], bwsz)] - dxy[x, y]) / rh)
+        # majority vote - most pixels shall follow the funnel pattern
+        #mvote = np.median(dn) >= 0.5 #/ float(rh.size)
+        cmap[x, y] = dn.min() #np.median(dn)
 
     # analyse region properties and leave only the strongest cmap scores per particle
-    bw = np.logical_and(bw, cmap >= cfg.PERIM_THRESH)
-    cmap[np.logical_not(bw)] = 0
+    #bw = np.logical_and(bw, cmap >= cfg.MEDIAN_CLEARANCE)
+    #cmap[np.logical_not(bw)] = 0
     regions = regionprops(label(bw))
     for region in regions:
         coords = region['Coordinates']
@@ -122,11 +140,14 @@ def adjust_coodinates(coords,srcsz,dstsz,bn,stride):
     coords = coords*stride + unpadl[None,:]
     return coords*bn
 
-ctfstar = '/jasper/result/GPCR_GI/CtfFind/job002/micrographs_ctf.star'
+# ctfstar = '/jasper/result/GPCR_GI/CtfFind/job002/micrographs_ctf.star'
+ctfstar = '/jasper/result/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Nucleosome_20170427_1821/CtfFind/job005/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Braf_20170526_1206/CtfFind/job007/micrographs_ctf.star'
+outdir  = '/jasper/result/rhodopsin-Gi/cnnpick/'
+MAX_RES_THRESH = 3.8
+MAX_PARTICLES  = 60000
 
-outdir  = '/jasper/result/GPCR_GI/cnnpick/'
 ft.rmtree_assure(outdir)
 ft.mkdir_assure(outdir)
 
@@ -136,6 +157,8 @@ ft.mkdir_assure(outdir)
 
 ####### Read Relion jobs infor and prepare picking params ########
 micros = parse_ctf_star(ctfstar)
+# select micros by maxres
+micros = {key:micros[key] for key in micros if micros[key]['maxres'] < MAX_RES_THRESH}
 psize  = path2psize(ctfstar, 'CtfFind')
 # particle diameter in pixels
 D      = path2part_diameter(ctfstar) / psize
@@ -145,6 +168,8 @@ psizebn = psize * bn
 outmicrodir = os.path.join(outdir,os.path.basename(os.path.dirname(micros.iterkeys().next())))
 ft.mkdir_assure(outmicrodir)
 
+utils.tprint("Picking particles from %d micrographs that exceed %dA resolution" % (len(micros),MAX_RES_THRESH))
+
 ##################################################################
 with tf.Graph().as_default() as g:
     model    = Model.create_instance(FLAGS.model_path, 'test', FLAGS.tfrecord_dir)
@@ -153,7 +178,6 @@ with tf.Graph().as_default() as g:
 
     with g.device(FLAGS.eval_device):
         with tf.name_scope('inputs'):
-        # tf_global_step = slim.get_or_create_global_step()
             images = tf.placeholder(tf.float32, shape=(None, None, 1))
             data = {'image': model.data_single(images)}
 
@@ -175,7 +199,7 @@ with tf.Graph().as_default() as g:
         sess.run(glob_init)
         _load_checkpoint(sess)
 
-        # apply CNN detection on properly rescaled image
+        part_count = 0
         for micro in micros:
             # read orogonal micrograph
             im   = mrc.load(micro)[0]
@@ -189,7 +213,7 @@ with tf.Graph().as_default() as g:
             pmap   = calc_single_score_per_particle(cls_prob_py[0],rpn_prob_py[0,...,cleanidx],dxy_pred_py[0])
 
             # particle coordinates in the original micrograph coordinates
-            coords = np.column_stack(np.where(pmap))
+            coords = np.column_stack(np.where(pmap>cfg.MIN_CLEARANCE))
 
             # imff coordinate system for display
             coords_imff = adjust_coodinates(coords,np.int32(pmap.shape),np.int32(imff.shape[:2]),1,cfg.STRIDES[0])
@@ -197,9 +221,9 @@ with tf.Graph().as_default() as g:
             coords_orig = adjust_coodinates(coords,np.int32(pmap.shape),szbn,bn,cfg.STRIDES[0])
 
             starname = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
-            # dstmrc   = os.path.join(outmicrodir, ft.file_only(micro) + '.mrc')
             save_coords_in_star(starname,coords_orig)
-            print "Found %d particles in %s, saving in %s" % (coords_orig.shape[0],micro,starname)
+            part_count += coords_orig.shape[0]
+            print "detected %d particles | tot %d" % (coords_orig.shape[0],part_count)
 
             #### SAVE figure as well ######
             figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
@@ -207,6 +231,9 @@ with tf.Graph().as_default() as g:
 
             savefig(plt.gcf(),figname)
             plt.close(plt.gcf())
+
+            if part_count >= MAX_PARTICLES:
+                break
 
 ############## GARBAGE #################################
             # suffname = os.path.join(outdir,'coords_suffix_cnnpick.star')

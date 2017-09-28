@@ -83,7 +83,7 @@ def calc_micro_pick_shape(micro,D_pixels):
 
 def plot_class_coords(im,class_coords,d):
     ax  = plt.subplot()
-    plt.ion()
+    # plt.ion()
     vmn = np.percentile(im, 1)
     vmx = np.percentile(im, 99)
     ax.imshow(im, vmin=vmn, vmax=vmx, cmap=plt.cm.gray)
@@ -104,7 +104,7 @@ def plot_class_coords(im,class_coords,d):
         ax.axis((0, im.shape[1], im.shape[0], 0))
     ax.set_title("%s = %s" % (cstr[:-1],classes[:-1]))
     plt.draw()
-    plt.pause(0.001)
+    # plt.pause(0.001)
 
 
 def neib_coords(coords,D):
@@ -170,7 +170,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         allmicros   = {}
         for d in range(len(topdirs)):
             cid = topdirs[d].tostring()
-            tprint("Listing directory %s ..." % d)
+            tprint("Listing directory %s ..." % cid)
             class2label.update({cid:d})
             label2class.update({d:cid})
             # get all star files with particle coordinates for this class

@@ -13,17 +13,19 @@ STRIDES       = [8]
 # | x | - 0.5 / sigma ^ 2, otherwise
 L1_SIGMA = 5.0
 
-# number of channels used for classification
-CLS_CHANNELS   = 64
+
 # number of channels in the first convolution layer
 CONV0_CHANNELS = 16
-# number of ausxilliary channels for focused classification
+# number of auxilliary channels for focused classification
 N_CLS_AUX_CHANNELS = 4
+# number of channels used for focused classification
+CLS_CHANNELS = 64
 # focus loss function parameter
 # GAMMA         = 0.0
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.98
-# how many locations in the perimeter match single particle hypothesis
-PERIM_THRESH = 0.5
+PROB_THRESH  = 0.7
+# the minimum value for the particle pixel "clearance" from neighbor particles presence
+# values in [0,1] 1-cleanest
+MIN_CLEARANCE = 0.1
 

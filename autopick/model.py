@@ -191,8 +191,8 @@ class AutopickModel(Model):
         return rpn_loss,dxy_loss,cls_loss
 
     def arg_scope(self,is_training,**kwargs):
-        with slim.arg_scope(super(AutopickModel, self).arg_scope(is_training,WEIGHT_DECAY,use_batch_norm=True,
-                                                                batch_norm_decay=0.997,**kwargs)):
+        with slim.arg_scope(super(AutopickModel, self).arg_scope(is_training,WEIGHT_DECAY,use_batch_norm=False,
+                                                                batch_norm_decay=0.998,**kwargs)):
             with slim.arg_scope([prelu],alpha_decay=ALPHA_DECAY) as sc:
                 return sc
 

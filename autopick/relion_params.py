@@ -33,13 +33,13 @@ def parse_particles_star(star_file):
     return micros
 
 def parse_ctf_star(ctfstar):
-    # ajob = os.path.dirname(os.path.realpath(ctfstar))
+    '''Parse ctf star file and return dictionary with necessary for each microgrpah'''
     recs = star.starFromPath(ctfstar).readLines()
     micros = {}
     root   = ft.updirs(ctfstar,JOB2UPDIRS['CtfFind'])
     for rec in recs:
         key = os.path.join(root,rec['MicrographName'])
-        micros.update({key:{'ctf':CTF(**rec)}})
+        micros.update({key:{'ctf':CTF(**rec),'maxres': np.float32(rec['CtfMaxResolution'])}})
     return micros
 
 def path2part_diameter(path):
