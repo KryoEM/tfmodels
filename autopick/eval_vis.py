@@ -73,15 +73,15 @@ def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
     D = cfg.PART_D_PIXELS/cfg.STRIDES[0]
 
     # zero boundaries
-    rpn_prob = image.zero_border(rpn_prob,D//2)
-    cls_prob = image.zero_border(cls_prob,D//2)
+    rpn_prob = image.zero_border(rpn_prob,D//2).copy()
+    cls_prob = image.zero_border(cls_prob,D//2).copy()
 
     # check rpn_prob for problems
-    regions  = regionprops(label(rpn_prob > cfg.PROB_THRESH))
-    areas = np.int32([r['Area'] for r in regions])
-    if np.any(areas > D**2):
-        print "Something wrong with micrograph - too large response, skipping ..."
-        rpn_prob[:] = 0.0
+    # regions  = regionprops(label(rpn_prob > cfg.PROB_THRESH))
+    # areas = np.int32([r['Area'] for r in regions])
+    # if np.any(areas > D**2):
+    #     print "Something wrong with micrograph - large area response, skipping ..."
+    #     rpn_prob[:] = 0.0
 
     bw = np.logical_and(cls_prob >= cfg.PROB_THRESH, rpn_prob >= cfg.PROB_THRESH)
     # predicted distance from partice
@@ -128,6 +128,8 @@ def calc_single_score_per_particle(cls_prob, rpn_prob, dxy_pred):
 def preprocess_micro(imbn,ctf,psizebn):
     szcrop  = utils.prevmult(szbn, 128)
     imcrop  = image.crop2D(imbn, szcrop)
+    # remove background
+    imcrop  = image.background_remove2D(imcrop,cfg.LP_RES)
     # remove bad pixels
     imcrop  = image.unbad2D(imcrop, thresh=5, neib=3)
     imff    = ctf.phase_flip_cpu(imcrop, psizebn)
@@ -145,8 +147,9 @@ ctfstar = '/jasper/result/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Nucleosome_20170427_1821/CtfFind/job005/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Braf_20170526_1206/CtfFind/job007/micrographs_ctf.star'
 outdir  = '/jasper/result/rhodopsin-Gi/cnnpick/'
-MAX_RES_THRESH = 3.8
-MAX_PARTICLES  = 60000
+
+MAX_RES_THRESH = 3.5
+MAX_PARTICLES  = 1e8
 
 ft.rmtree_assure(outdir)
 ft.mkdir_assure(outdir)
@@ -168,7 +171,7 @@ psizebn = psize * bn
 outmicrodir = os.path.join(outdir,os.path.basename(os.path.dirname(micros.iterkeys().next())))
 ft.mkdir_assure(outmicrodir)
 
-utils.tprint("Picking particles from %d micrographs that exceed %dA resolution" % (len(micros),MAX_RES_THRESH))
+utils.tprint("Picking from %d micrographs with CTF exceeding %.2fA resolution" % (len(micros),MAX_RES_THRESH))
 
 ##################################################################
 with tf.Graph().as_default() as g:
@@ -183,7 +186,7 @@ with tf.Graph().as_default() as g:
 
     # needs to be is_training=False, but not working due to some bug
     # shall be resolved after updates/upgrades
-    logits, end_points = model.network(data, is_training=True)
+    logits, end_points = model.network(data, is_training=False)
 
     rpn_score = logits['rpn_score']
     dxy_pred  = logits['dxy_pred']
@@ -199,12 +202,13 @@ with tf.Graph().as_default() as g:
         sess.run(glob_init)
         _load_checkpoint(sess)
 
-        part_count = 0
+        part_count  = 0
+        micro_count = 0.0
         for micro in micros:
             # read orogonal micrograph
-            im   = mrc.load(micro)[0]
-            szbn = utils.np.int32(np.round(np.float32(im.shape) / bn))
-            imbn = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
+            im    = mrc.load(micro)[0]
+            szbn  = utils.np.int32(np.round(np.float32(im.shape) / bn))
+            imbn  = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
 
             # convert micrograph to pickable size
             imff = preprocess_micro(imbn,micros[micro]['ctf'],psizebn)
@@ -222,8 +226,9 @@ with tf.Graph().as_default() as g:
 
             starname = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
             save_coords_in_star(starname,coords_orig)
-            part_count += coords_orig.shape[0]
-            print "detected %d particles | tot %d" % (coords_orig.shape[0],part_count)
+            part_count  += coords_orig.shape[0]
+            micro_count += 1
+            print "detected %d/%d particles, micrographs %d/%d" % (coords_orig.shape[0],part_count,micro_count,len(micros))
 
             #### SAVE figure as well ######
             figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')

@@ -9,7 +9,6 @@ import numpy as np
 from   fileio import filetools as ft
 from   fileio import mrc
 from   joblib import Parallel, delayed
-# import multiprocessing as mp
 import random
 import cv2
 from   myplotlib import imshow,clf,savefig
@@ -32,9 +31,6 @@ IMAGE_KEY  = 'image/uint8'
 SHAPE_KEY  = 'shape'
 BACKGROUND = 'background'
 CLEAN      = 'clean'
-# flags
-RESIZE_MICROS = True
-AUGMENT_BACKGROUND = False
 ##########################
 
 ##
@@ -132,6 +128,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         szbn, bn = calc_micro_pick_shape(micro,D)
         psizebn  = psize * bn
         assert(np.all(np.int32(szbn)<np.int32(im.shape)))
+        assert(np.all(np.int32(szbn)>=cfg.PICK_WIN))
         # resize image
         imbn  = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
         # remove bad pixels
@@ -170,7 +167,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         allmicros   = {}
         for d in range(len(topdirs)):
             cid = topdirs[d].tostring()
-            tprint("Listing directory %s ..." % cid)
+            tprint("Listing directory \'%s\' ..." % cid)
             class2label.update({cid:d})
             label2class.update({d:cid})
             # get all star files with particle coordinates for this class
@@ -194,20 +191,23 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         for label in label2class:
             print 'Total coordinates in %s \t = %d' % (label2class[label],classcnt[label])
 
-        if RESIZE_MICROS:
+        if cfg.RESIZE_MICROS:
             print "Resizing %d micrographs ..." % len(allmicros)
+            # ft.rmtree_assure(self._resized_micros_dir)
             ft.mkdir_assure(self._resized_micros_dir)
             f = functools.partial(ParticleCoords2TFRecord.preprocess_micro)
-            # Sequential
+
+            # # Sequential
             # for micro in allmicros:
-            #      f((micro,allmicros[micro]))
+            #      f([micro,allmicros[micro]])
+
             # Parallel
             num_proc = 2 * mp.cpu_count()
             pool = ThreadPool(num_proc)
             pool.map(f, zip(allmicros.keys(), [allmicros[m] for m in allmicros]))
 
         # save updated micrographs
-        self.allmicros = allmicros #dict(zip(allmicros.keys(),updmicros))
+        self.allmicros = allmicros
 
     @staticmethod
     def remove_class_overlap(allmicros):
@@ -219,20 +219,20 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             R = D / 2.
 
             # ------- add background coordinates around each particle ---------------
-            if CLEAN in classes and AUGMENT_BACKGROUND:
-                clean_coords = np.array(classes[CLEAN])
-                addcoords = []
-                for coord in clean_coords:
-                    # add 4 neighbors
-                    for dx in [-R, 0, R]:
-                        for dy in [-R, 0, R]:
-                            if (not (dx == 0 and dy == 0)) and (dx == 0 or dy == 0):
-                                addcoords.append((coord + np.int32([dx, dy])).tolist())
-                # append clean particle neighbors to background
-                if BACKGROUND in classes:
-                    classes[BACKGROUND] += addcoords
-                else:
-                    classes.update({BACKGROUND: addcoords})
+            # if CLEAN in classes and AUGMENT_BACKGROUND:
+            #     clean_coords = np.array(classes[CLEAN])
+            #     addcoords = []
+            #     for coord in clean_coords:
+            #         # add 4 neighbors
+            #         for dx in [-R, 0, R]:
+            #             for dy in [-R, 0, R]:
+            #                 if (not (dx == 0 and dy == 0)) and (dx == 0 or dy == 0):
+            #                     addcoords.append((coord + np.int32([dx, dy])).tolist())
+            #     # append clean particle neighbors to background
+            #     if BACKGROUND in classes:
+            #         classes[BACKGROUND] += addcoords
+            #     else:
+            #         classes.update({BACKGROUND: addcoords})
             # -------------------------------------------------------------------------
 
             # collect all overlapping coordinates
@@ -247,12 +247,11 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
 
             # remove all overlapping coordinates
             if overlap.size > 0:
-                # remove only overlapping particles, but not bad/background and junk particles
-                # for key in classes:
-                key = CLEAN
-                coords = np.float32(classes[key])
-                dist   = cdist(coords, overlap).min(axis=1)
-                classes[key] = np.delete(coords, np.where(dist < D / 4.)[0], axis=0).tolist()
+                for key in classes:
+                # key = CLEAN
+                    coords = np.float32(classes[key])
+                    dist   = cdist(coords, overlap).min(axis=1)
+                    classes[key] = np.delete(coords, np.where(dist < D / 4.)[0], axis=0).tolist()
 
                 allmicros[micro]['coords'] = classes
         return allmicros
@@ -298,7 +297,7 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         coords  = self.allmicros[micro]['coords']
         tcoords = {}
         for label in self.classes:
-            if label in coords:
+            if label in coords and len(coords[label]) > 0:
                 lcoords = np.array(coords[label], dtype=np.float32)
                 # switch x and y
                 lcoords = lcoords[:,::-1]
@@ -362,6 +361,8 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         ctf     = self.allmicros[micro]['ctf']
 
         imbn,psizebn = mrc.load_psize(fname)
+        assert(np.all(np.int32(imbn.shape[-2:])>=cfg.PICK_WIN))
+
         imbn    = imbn[0]
         bn      = psizebn/psize
         # processing tile size
@@ -372,7 +373,11 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         D       = cfg.PART_D_PIXELS//cfg.STRIDES[0]
 
         # cut tile out
-        imt      = imbn[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN]
+        imt     = np.float32(imbn[x:x+cfg.PICK_WIN,y:y+cfg.PICK_WIN])
+        # remove backgroud
+        imt     = image.background_remove2D(imt,cfg.LP_RES)
+        imt     = image.float32_to_uint8(imt)
+        assert (imt.size == cfg.PICK_WIN ** 2)
         # flip phases
         imff     = ctf.phase_flip_cpu(imt,psizebn)
         # convert image to uint8
