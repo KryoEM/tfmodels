@@ -143,15 +143,16 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             D      = path2part_diameter(starfile)/psize
             params = parse_particles_star(starfile)
             for micro in params:
+                coords = params[micro]['coords']
                 if not micro in allmicros:
                     resizedname = os.path.join(self._resized_micros_dir, os.path.basename(micro))
-                    allmicros.update({micro: {'coords': {cid: params[micro]['coords']}, 'ctf': params[micro]['ctf'],
+                    allmicros.update({micro: {'coords': {cid: coords}, 'ctf': params[micro]['ctf'],
                                               'part_diameter': D,'psize': psize,'resizedname':resizedname}})
                 else:
-                    if not cid in allmicros[micro]:
-                        allmicros[micro]['coords'].update({cid: params[micro]['coords']})
+                    if not cid in allmicros[micro]['coords']:
+                        allmicros[micro]['coords'].update({cid: coords})
                     else:
-                        allmicros[micro]['coords'][cid].extend(params[micro]['coords'])
+                        allmicros[micro]['coords'][cid].extend(coords)
 
     def __init__(self,data_in_dir,data_out_dir):
 
@@ -215,10 +216,10 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
         for micro in allmicros:
             # available particle classes in the micrograph
             classes = allmicros[micro]['coords']
-            D = allmicros[micro]['part_diameter'] #micro2part_diameter(micro))
-            R = D / 2.
+            D = allmicros[micro]['part_diameter']
 
             # ------- add background coordinates around each particle ---------------
+            # R = D / 2.
             # if CLEAN in classes and AUGMENT_BACKGROUND:
             #     clean_coords = np.array(classes[CLEAN])
             #     addcoords = []
@@ -235,23 +236,49 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
             #         classes.update({BACKGROUND: addcoords})
             # -------------------------------------------------------------------------
 
-            # collect all overlapping coordinates
-            allcoords = np.zeros((0, 2))
-            overlap = np.zeros((0, 2))
+            # remove overlaps within classes
+            for key in classes:
+                coords  = np.float32(classes[key])
+                ncoords = coords.shape[0]
+                dists   = cdist(coords, coords)
+                # shut off self distances
+                dists  += 4*D*np.eye(ncoords,dtype=dists.dtype)
+                # collect all particles that are too close to the "first" particle
+                allremidxs = np.zeros(0,dtype=np.int32)
+                for k in range(ncoords):
+                    # obtain indexes of particles that are to close to particle k
+                    remidxs = np.where(dists[k] < D/4.)[0]
+                    # shut off all previous particles < k
+                    remidxs = np.delete(remidxs,np.where(remidxs < k)[0])
+                    # add close particles to the list
+                    allremidxs = np.concatenate([allremidxs,remidxs])
+                if len(allremidxs) > 0:
+                    # remove overlapping coordinates
+                    classes[key] = np.delete(coords, np.unique(allremidxs), axis=0).tolist()
+
+            # collect all overlapping coordinates between classes
+            allcoords = np.zeros((0, 2),dtype=np.float32)
+            overlap   = np.zeros((0, 2),dtype=np.float32)
             for key in classes:
                 coords = np.float32(classes[key])
                 if allcoords.size > 0:
-                    dist    = cdist(coords, allcoords).min(axis=1)
+                    alldist = cdist(coords, allcoords)
+                    # distance of this class to previous classes
+                    dist    = alldist.min(axis=1)
+                    # coordinates that are too close to other class coordinates
                     overlap = np.concatenate((overlap, coords[dist < D / 4., :]), 0)
+                    # do the opposite
+                    dist    = alldist.min(axis=0)
+                    overlap = np.concatenate((overlap, allcoords[dist < D / 4., :]), 0)
                 allcoords   = np.concatenate((allcoords, coords), 0)
 
-            # remove all overlapping coordinates
+            # remove overlapping coordinates
             if overlap.size > 0:
                 for key in classes:
-                # key = CLEAN
-                    coords = np.float32(classes[key])
-                    dist   = cdist(coords, overlap).min(axis=1)
-                    classes[key] = np.delete(coords, np.where(dist < D / 4.)[0], axis=0).tolist()
+                    if key == CLEAN: # only remove coordinates of clean particles that are too close to other classes
+                        coords = np.float32(classes[key])
+                        dist   = cdist(coords, overlap).min(axis=1)
+                        classes[key] = np.delete(coords, np.where(dist < D / 4.)[0], axis=0).tolist()
 
                 allmicros[micro]['coords'] = classes
         return allmicros

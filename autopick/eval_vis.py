@@ -148,9 +148,6 @@ ctfstar = '/jasper/result/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
 # ctfstar = '/jasper/result/Braf_20170526_1206/CtfFind/job007/micrographs_ctf.star'
 outdir  = '/jasper/result/rhodopsin-Gi/cnnpick/'
 
-MAX_RES_THRESH = 3.5
-MAX_PARTICLES  = 1e8
-
 ft.rmtree_assure(outdir)
 ft.mkdir_assure(outdir)
 
@@ -161,7 +158,7 @@ ft.mkdir_assure(outdir)
 ####### Read Relion jobs infor and prepare picking params ########
 micros = parse_ctf_star(ctfstar)
 # select micros by maxres
-micros = {key:micros[key] for key in micros if micros[key]['maxres'] < MAX_RES_THRESH}
+micros = {key:micros[key] for key in micros if micros[key]['maxres'] < cfg.CTF_RES_THRESH}
 psize  = path2psize(ctfstar, 'CtfFind')
 # particle diameter in pixels
 D      = path2part_diameter(ctfstar) / psize
@@ -171,7 +168,7 @@ psizebn = psize * bn
 outmicrodir = os.path.join(outdir,os.path.basename(os.path.dirname(micros.iterkeys().next())))
 ft.mkdir_assure(outmicrodir)
 
-utils.tprint("Picking from %d micrographs with CTF exceeding %.2fA resolution" % (len(micros),MAX_RES_THRESH))
+utils.tprint("Picking from %d micrographs with CTF better than %.2fA resolution" % (len(micros),cfg.CTF_RES_THRESH))
 
 ##################################################################
 with tf.Graph().as_default() as g:
@@ -228,7 +225,7 @@ with tf.Graph().as_default() as g:
             save_coords_in_star(starname,coords_orig)
             part_count  += coords_orig.shape[0]
             micro_count += 1
-            print "detected %d/%d particles, micrographs %d/%d" % (coords_orig.shape[0],part_count,micro_count,len(micros))
+            print "micro %d/%d: detected %d particles, tot %d" % (micro_count,len(micros),coords_orig.shape[0],part_count)
 
             #### SAVE figure as well ######
             figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
@@ -237,7 +234,7 @@ with tf.Graph().as_default() as g:
             savefig(plt.gcf(),figname)
             plt.close(plt.gcf())
 
-            if part_count >= MAX_PARTICLES:
+            if part_count >= cfg.MAX_PARTICLES:
                 break
 
 ############## GARBAGE #################################

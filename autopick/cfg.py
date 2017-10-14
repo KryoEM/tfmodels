@@ -1,9 +1,11 @@
 #### Global PARAMS #######
 
-WEIGHT_DECAY = 1e-7
-ALPHA_DECAY  = 1e-5
-
-DD = 8
+WEIGHT_DECAY = 1e-6
+ALPHA_DECAY  = 1e-6
+# # leaky coefficient
+# ALPHA = 1e-2
+# # probability of the leak
+# ALPHA_PROB = 0.1
 
 # picking diameter in pixels
 PART_D_PIXELS = 64
@@ -23,18 +25,27 @@ L1_SIGMA = 5.0
 
 # number of channels in the first convolution layer
 CONV0_CHANNELS = 16
+# squeeze factor
+DD = 8
+
 # number of auxilliary channels for focused classification
 N_CLS_AUX_CHANNELS = 4
 # number of channels used for focused classification
 CLS_CHANNELS = 64
 
+## EVALUATION
+
 # probability threshold for particle detection
-PROB_THRESH  = 0.9
+PROB_THRESH  = 0.6
 # the minimum value for the particle pixel "clearance" from neighbor particles presence
 # values in [0,1] 1-cleanest
-MIN_CLEARANCE = 0.2
+MIN_CLEARANCE = 0.1
+
+CTF_RES_THRESH = 3.8
+MAX_PARTICLES  = 1e8
+
 
 # whether to resize all micros, or use previously resized ones
-RESIZE_MICROS = False
+RESIZE_MICROS = True
 
 

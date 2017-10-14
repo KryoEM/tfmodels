@@ -8,7 +8,7 @@ from __future__ import print_function
 import tensorflow as tf
 slim = tf.contrib.slim
 
-from    model_generic import Model,prelu,enet_pool,enet,enet_unpool,modified_smooth_l1,concat_squeeze
+from    model_generic import Model,prelu,rrelu,enet_pool,enet,enet_unpool,modified_smooth_l1
 from    autopick.tfrecorder import create_dataset
 from    autopick import cfg
 import  numpy as np
@@ -36,21 +36,20 @@ class AutopickModel(Model):
         # Feature extractor part is shared for all heads
         with tf.variable_scope(scope, reuse=reuse):
             base_conv = enet(net, depth // DD, depth, scope='base_conv_0', reuse=reuse)
-            base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_1', reuse=reuse)
-            base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_2', reuse=reuse)
+            # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_1', reuse=reuse)
+            # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_2', reuse=reuse)
             # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_3', reuse=reuse)
 
             # use a separate head for each task
-            score_conv = enet(base_conv, depth // DD, depth, scope='score_conv_0', reuse=reuse)
-            dxy_conv   = enet(base_conv, depth // DD, depth, scope='dxy_conv_0', reuse=reuse)
+            # score_conv = enet(base_conv, depth // DD, depth, scope='score_conv_0', reuse=reuse)
+            # dxy_conv   = enet(base_conv, depth // DD, depth, scope='dxy_conv_0', reuse=reuse)
             # aux_conv   = enet(net, depth // DD, depth, scope='aux_conv_0', reuse=reuse)
             # auxilliary channels for classification
             cls_aux    = slim.conv2d(base_conv, cfg.N_CLS_AUX_CHANNELS, [1, 1], scope='cls_aux',reuse=reuse)
-
             # score for classification
-            rpn_score = slim.conv2d(score_conv, nclasses, [1, 1], activation_fn=None,normalizer_fn=None, scope='rpn_score',reuse=reuse)
+            rpn_score = slim.conv2d(base_conv, nclasses, [1, 1], activation_fn=None,normalizer_fn=None, scope='rpn_score',reuse=reuse)
             # coordinate correction prediction
-            dxy_pred  = slim.conv2d(dxy_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='dxy_pred',reuse=reuse)
+            dxy_pred  = slim.conv2d(base_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='dxy_pred',reuse=reuse)
 
             # combine rpn, dxy and aux channels
             cls_conv  =  tf.concat(axis=3, values=[rpn_score,dxy_pred,cls_aux])
@@ -59,8 +58,8 @@ class AutopickModel(Model):
             depth     = cfg.CLS_CHANNELS
             cls_conv  = slim.conv2d(cls_conv, depth, [1, 1], scope='cls_conv_0',reuse=reuse)
             cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_0', reuse=reuse)
-            cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_1', reuse=reuse)
-            cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_2', reuse=reuse)
+            # cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_1', reuse=reuse)
+            # cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_2', reuse=reuse)
             cls_score = slim.conv2d(cls_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='cls_score',reuse=reuse)
             return rpn_score,dxy_pred,cls_score
 
@@ -195,8 +194,11 @@ class AutopickModel(Model):
     def arg_scope(self,is_training,**kwargs):
         with slim.arg_scope(super(AutopickModel, self).arg_scope(is_training,cfg.WEIGHT_DECAY,use_batch_norm=True,
                                                                 batch_norm_decay=0.95, batch_norm_rmax=10.0,
-                                                                batch_norm_dmax=100.0, **kwargs)):
+                                                                batch_norm_dmax=100.0, activation_fn=rrelu, **kwargs)):
             with slim.arg_scope([prelu],alpha_decay=cfg.ALPHA_DECAY) as sc:
+            # with slim.arg_scope([rrelu], alpha=cfg.ALPHA,
+            #                     alpha_prob=cfg.ALPHA_PROB,
+            #                     is_training=is_training) as sc:
                 return sc
 
     def network(self,data,is_training=False,reuse=None,**kwargs):
@@ -206,70 +208,46 @@ class AutopickModel(Model):
             with tf.variable_scope('autopick', values=data, reuse=reuse) as sc:
                 end_point_collection = sc.original_name_scope + '_end_points'
                 with slim.arg_scope([slim.conv2d,slim.fully_connected,slim.max_pool2d,
-                                     enet, enet_pool, enet_unpool, concat_squeeze],
-                                    outputs_collections=[end_point_collection]):
+                                     enet, enet_pool, enet_unpool], outputs_collections=[end_point_collection]):
 
                     #### Encoder convolution layers #############
                     depth   = cfg.CONV0_CHANNELS
-                    DF      = 1.5
-                    conv1_0 = slim.conv2d(images, depth, kernel_size=[3, 3], scope='conv1_0')
-
-                    enc1_0  = enet_pool(conv1_0, np.maximum(depth//DD,4), depth, scope='enet1_0')
-                    enc1    = enet(enc1_0, np.maximum(depth//DD,4), depth, scope='enet1_1')
-                    # enc1   = concat_squeeze(enc1_1,enc1_2,depth)
+                    DF      = 2.0
+                    conv0_0 = slim.conv2d(images, depth, kernel_size=[3, 3], scope='conv0_0')
 
                     depth   = np.int32(depth*DF)
-                    enc2_0  = enet_pool(enc1, depth // DD, depth, scope='enet2_0')
-                    enc2    = enet(enc2_0, depth // DD, depth, scope='enet2_1')
-                    # enc2   = concat_squeeze(enc2_0,enc2_1,depth)
+                    enc1,_  = enet_pool(conv0_0, depth//DD, depth, scope='enet1_0')
 
                     depth   = np.int32(depth*DF)
-                    enc3_0  = enet_pool(enc2, depth // DD, depth, scope='enet3_0')
-                    enc3    = enet(enc3_0, depth // DD, depth, scope='enet3_1')
-                    # enc3   = concat_squeeze(enc3_0,enc3_1,depth)
+                    enc2,_  = enet_pool(enc1, depth // DD, depth, scope='enet2_0')
 
                     depth   = np.int32(depth*DF)
-                    enc4_0  = enet_pool(enc3, depth // DD, depth, scope='enet4_0')
-                    enc4    = enet(enc4_0, depth // DD, depth, scope='enet4_1')
-                    # enc4   = concat_squeeze(enc4_0,enc4_1,depth)
+                    enc3,s3 = enet_pool(enc2, depth // DD, depth, scope='enet3_0')
 
                     depth   = np.int32(depth*DF)
-                    enc5_0  = enet_pool(enc4, depth // DD, depth, scope='enet5_0')
-                    enc5    = enet(enc5_0, depth // DD, depth, scope='enet5_1')
-                    # enc5   = concat_squeeze(enc5_0,enc5_1,depth)
+                    enc4,s4 = enet_pool(enc3, depth // DD, depth, scope='enet4_0')
 
                     depth   = np.int32(depth*DF)
-                    enc6_0  = enet_pool(enc5, depth // DD, depth, scope='enet6_0')
-                    enc6    = enet(enc6_0, depth // DD, depth, scope='enet6_1')
-                    # enc6_1 = concat_squeeze(enc6_0,enc6_1,depth)
-                    # enc6_2 = enet(enc6_1, depth // DD, depth, scope='enet6_2')
-                    # enc6   = concat_squeeze(enc6_1,enc6_2,depth)
+                    enc5,s5 = enet_pool(enc4, depth // DD, depth, scope='enet5_0')
 
                     depth   = np.int32(depth*DF)
-                    enc7_0  = enet_pool(enc6, depth // DD, depth, scope='enet7_0')
-                    # Add some more layers for increased receptive field
-                    enc7    = enet(enc7_0, depth // DD, depth, scope='enet7_1')
+                    enc6,s6 = enet_pool(enc5, depth // DD, depth, scope='enet6_0')
+
+                    depth   = np.int32(depth*DF)
+                    enc7,_ = enet_pool(enc6, depth // DD, depth, scope='enet7_0')
 
                     #### Unpooling layers ##############
                     depth   = np.int32(depth/DF)
-                    dec6_0  = enet_unpool(enc7, enc6, depth // DD, depth, scope='uenet6_0')
-                    dec6    = enet(dec6_0, depth // DD, depth, scope='uenet6_1')
-                    # dec6   = concat_squeeze(dec6_0,dec6_1,depth)
+                    dec6    = enet_unpool(enc7, s6, depth // DD, depth, scope='uenet6_0')
 
                     depth   = np.int32(depth/DF)
-                    dec5_0  = enet_unpool(dec6, enc5, depth // DD, depth, scope='uenet5_0')
-                    dec5    = enet(dec5_0, depth // DD, depth, scope='uenet5_1')
-                    # dec5   = concat_squeeze(dec5_0,dec5_1,depth)
+                    dec5    = enet_unpool(dec6, s5, depth // DD, depth, scope='uenet5_0')
 
                     depth   = np.int32(depth/DF)
-                    dec4_0  = enet_unpool(dec5, enc4, depth // DD, depth, scope='uenet4_0')
-                    dec4    = enet(dec4_0, depth // DD, depth, scope='uenet4_1')
-                    # dec4   = concat_squeeze(dec4_0,dec4_1,depth)
+                    dec4    = enet_unpool(dec5, s4, depth // DD, depth, scope='uenet4_0')
 
                     depth   = np.int32(depth/DF)
-                    dec3_0  = enet_unpool(dec4, enc3, depth // DD, depth, scope='uenet3_0')
-                    dec3    = enet(dec3_0, depth // DD, depth, scope='uenet3_1')
-                    # dec3   = concat_squeeze(dec3_0,dec3_1,depth)
+                    dec3    = enet_unpool(dec4, s3, depth // DD, depth, scope='uenet3_0')
 
                     # connect detection head that calculates detection score
                     rpn_score,dxy_pred,cls_score = AutopickModel.get_rpn_scores(dec3, 'rpn_score3', nclasses, reuse=False)
