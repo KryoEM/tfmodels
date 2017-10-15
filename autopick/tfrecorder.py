@@ -78,15 +78,13 @@ def calc_micro_pick_shape(micro,D_pixels):
     return np.int32(np.round(np.float32(mrc.shape(micro)[1:]) / bn)),bn
 
 def plot_class_coords(im,class_coords,d):
-    ax  = plt.subplot()
-    # plt.ion()
+    plt.ioff()
+    fig,ax = plt.subplots()
     vmn = np.percentile(im, 1)
     vmx = np.percentile(im, 99)
     ax.imshow(im, vmin=vmn, vmax=vmx, cmap=plt.cm.gray)
     colors  = ['b','r','g','c','m','y','k','w']
-    idx     = 0
-    cstr    = ''
-    classes = ''
+    idx,cstr,classes = 0,'',''
     for key in class_coords:
         for coord in class_coords[key]:
             y, x = coord
@@ -100,8 +98,7 @@ def plot_class_coords(im,class_coords,d):
         ax.axis((0, im.shape[1], im.shape[0], 0))
     ax.set_title("%s = %s" % (cstr[:-1],classes[:-1]))
     plt.draw()
-    # plt.pause(0.001)
-
+    return fig
 
 def neib_coords(coords,D):
     ''' Turns each coordinate to a set of coordinates insize a circular mask '''
@@ -301,17 +298,17 @@ class ParticleCoords2TFRecord(Directory2TFRecord):
                         d = dict(zip(keys, sess.run(data)))
                         im    = d['image']
                         dd    = dict((k,unravel_coords_append(d[k],featsz)*cfg.STRIDES[0]) for k in self.classes)
-                        plot_class_coords(im,dd,cfg.PART_D_PIXELS)
+                        fig   = plot_class_coords(im,dd,cfg.PART_D_PIXELS)
                         # save the resulting graph
                         fname = os.path.join(out_dir, 'example_%d' % i)
                         print "saving example %s, %d out of %d" % (fname,i,N_EXAMPLES)
-                        savefig(plt.gcf(),fname)
+                        savefig(fig,fname)
                         # plt.gcf().set_figheight(10.0)
                         # plt.gcf().set_figwidth(10.0)
                         # fig = plt.gcf()
                         # fig.subplots_adjust(wspace=.1, hspace=0.2, left=0.03, right=0.98, bottom=0.05, top=0.93)
                         # fig.savefig(fname)
-                        plt.close(plt.gcf())
+                        plt.close(fig)
 
     def init_feature_keys(self,box_keys=[]):
         self.feature_keys['byte_keys'] = list(box_keys) + [SHAPE_KEY,IMAGE_KEY] + ['dxyidxs','dxy']

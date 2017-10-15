@@ -26,6 +26,7 @@ from   utils import poolcontext
 from   functools import partial
 from   tfutils import config_gpus
 from   utils import tprint
+from   image import plot_coord_rgb
 
 from autopick import cfg
 
@@ -131,7 +132,7 @@ def adjust_coodinates(coords,srcsz,dstsz,stride):
     coords = coords*stride + unpadl[None,:]
     return coords
 
-def output_map(bn,sz,outmicrodir,args):
+def output_coords(bn,sz,outmicrodir,args):
     '''Converts particle maps into coordinates and saves coordinates with the png file'''
     pmap,imdisp,micro = args
     # particle coordinates in the original micrograph coordinates
@@ -147,9 +148,8 @@ def output_map(bn,sz,outmicrodir,args):
     save_coords_in_star(starname, coords_orig)
     #### SAVE figure as well ######
     figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
-    plot_class_coords(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS)
-    savefig(plt.gcf(), figname)
-    plt.close(plt.gcf())
+    imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, 2)
+    cv2.imwrite(figname,imrgb)
     # return number of particles
     return coords_orig.shape[0]
 
@@ -159,9 +159,9 @@ def init_dataflow(ctfstar,batch_size):
     # normalizer operation
     augm = df.imgaug.AugmentorList([df.imgaug.MeanVarianceNormalize()])
     ds1 = df.ThreadedMapData(
-        ds0, nr_thread=batch_size//2,
+        ds0, nr_thread=2*batch_size,
         map_func=lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), dp[2]],
-        buffer_size=2*batch_size)
+        buffer_size=4*batch_size)
     ds1 = df.PrefetchDataZMQ(ds1, nr_proc=1)
     ds  = df.BatchData(ds1, batch_size)
     ds.reset_state()
@@ -250,27 +250,29 @@ with tf.Graph().as_default() as g:
 
         micro_count,part_count = 0,0
         for dp in ds.get_data():
-            # prepare output function for map
-            out_map = partial(output_map,bn,ds0.shape,outmicrodir)
             # apply model on input images
             cls_prob_py,rpn_prob_py,dxy_pred_py,im_py = sess.run([cls_prob,rpn_prob,dxy_pred,data['image']],feed_dict={images:dp[0]})
 
             # parallel process probability and feature maps and ouput results
-            prob_data = zip(*[cls_prob_py,rpn_prob_py[...,cleanidx],dxy_pred_py])
+            # prepare output function for map
+            out_coords = partial(output_coords,bn,ds0.shape,outmicrodir)
+            prob_data  = zip(*[cls_prob_py,rpn_prob_py[...,cleanidx],dxy_pred_py])
             with poolcontext(processes=FLAGS.batch_size) as pool:
                 # convert probabilities into particle maps
                 pmaps = pool.map(calc_single_score_per_particle,prob_data)
                 # convert particle maps to coordinates and save results
                 out_data = zip(*[pmaps,dp[0],dp[1]])
-                nparts = pool.map(out_map, out_data)
+                nparts = pool.map(out_coords, out_data)
+            # for pmap,im,micro in zip(*[pmaps,dp[0],dp[1]]):
+            #     output_map(bn,ds0.shape,outmicrodir,(pmap,im,micro))
 
             new_parts    = np.sum(nparts)
             part_count  += new_parts
             micro_count += len(pmaps)
             tprint("micros %d/%d: parts %d/%d" % (micro_count, ds0.size(), new_parts, part_count))
 
-            if part_count >= cfg.MAX_PARTICLES:
-                break
+            # if part_count >= cfg.MAX_PARTICLES:
+            #     break
 
 ############## GARBAGE #################################
             # check rpn_prob for problems

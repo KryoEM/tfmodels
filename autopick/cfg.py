@@ -46,7 +46,7 @@ PROB_THRESH  = 0.7
 # values in [0,1] 1-cleanest
 MIN_CLEARANCE = 0.1
 
-CTF_RES_THRESH = 3.8
+CTF_RES_THRESH = 4.0
 MAX_PARTICLES  = 1e8
 
 
