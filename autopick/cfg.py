@@ -1,5 +1,10 @@
 #### Global PARAMS #######
 
+###### TFRecorder
+# whether to resize all micros, or use previously resized ones
+RESIZE_MICROS = True
+
+####### TRAINING ###########
 WEIGHT_DECAY = 1e-6
 ALPHA_DECAY  = 1e-6
 # # leaky coefficient
@@ -33,10 +38,10 @@ N_CLS_AUX_CHANNELS = 4
 # number of channels used for focused classification
 CLS_CHANNELS = 64
 
-## EVALUATION
+############# EVALUATION ###################
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.6
+PROB_THRESH  = 0.7
 # the minimum value for the particle pixel "clearance" from neighbor particles presence
 # values in [0,1] 1-cleanest
 MIN_CLEARANCE = 0.1
@@ -45,7 +50,5 @@ CTF_RES_THRESH = 3.8
 MAX_PARTICLES  = 1e8
 
 
-# whether to resize all micros, or use previously resized ones
-RESIZE_MICROS = True
 
 
