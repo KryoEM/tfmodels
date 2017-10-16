@@ -158,7 +158,7 @@ def output_coords(bn,sz,outmicrodir,args):
     save_coords_in_star(starname, coords_orig)
     #### SAVE figure as well ######
     figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
-    imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, 1)
+    imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, cfg.CIRCLE_WIDTH)
     cv2.imwrite(figname,imrgb)
     # return number of particles
     return coords_orig.shape[0]
@@ -170,9 +170,9 @@ def init_dataflow(ctfstar,batch_size):
     dss0,basedir,shape = MicrosGenerator.create_partition(ctfstar,batch_size)
     # preprocess input
     dss1 = [df.MapData(ds0, lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), np.array(dp[0])]) for ds0 in dss0]
-    # prefetch each generator in a separate process with buffer of 2 images per process
+    # prefetch each generator in a separate process with buffer of 4 images per process
     # dss1 = [df.PrefetchDataZMQ(ds1, nr_proc=1, hwm=2) for ds1 in dss1]
-    dss1 = [df.PrefetchData(ds1, nr_prefetch = 2, nr_proc=1) for ds1 in dss1]
+    dss1 = [df.PrefetchData(ds1, nr_prefetch=4, nr_proc=1) for ds1 in dss1]
     # join all dataflows
     ds1  = df.RandomMixData(dss1)
     # ds1  = df.JoinData(dss1)

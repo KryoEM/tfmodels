@@ -48,6 +48,8 @@ MIN_CLEARANCE = 0.1
 
 CTF_RES_THRESH = 4.0
 MAX_PARTICLES  = 1e8
+# particle circle line width
+CIRCLE_WIDTH = 2
 
 
 
