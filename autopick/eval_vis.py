@@ -25,7 +25,7 @@ from   tensorpack import QueueInput,PrintData
 from   utils import poolcontext
 from   functools import partial
 from   tfutils import config_gpus
-from   utils import tprint
+from   utils import tprint,part_idxs
 from   image import plot_coord_rgb
 
 from autopick import cfg
@@ -94,7 +94,8 @@ def calc_single_score_per_particle(args):
         cmap.flat[offidxs] = 0
     return cmap
 
-def preprocess_micro(im,ctf,psize,bn):
+def preprocess_micro(micro,ctf,psize,bn):
+    im = mrc.load(micro)[0]
     psizebn = psize * bn
     szbn    = utils.np.int32(np.round(np.float32(im.shape) / bn))
     imbn    = cv2.resize(im, tuple(szbn[::-1]), interpolation=cv2.INTER_AREA)
@@ -108,23 +109,32 @@ def preprocess_micro(im,ctf,psize,bn):
     # add one channel
     return imff.reshape(imff.shape + (1,))
 
-class ImageGenerator():
-    def __init__(self,ctfstar):
+class MicrosGenerator():
+    def __init__(self,micros):
+        # micros = parse_ctf_star(ctfstar)
+        # select micros by maxres
+        self.__micros = micros #{key: micros[key] for key in micros if micros[key]['maxres'] < cfg.CTF_RES_THRESH}
+        # self.shape = shape #mrc.shape(micros.iterkeys().next())[1:]
+    @staticmethod
+    def create_partition(ctfstar,nbatches):
+        ''' Create a number of generators each serving a chunk of data '''
         micros = parse_ctf_star(ctfstar)
         # select micros by maxres
-        self.__micros = {key: micros[key] for key in micros if micros[key]['maxres'] < cfg.CTF_RES_THRESH}
-        self.shape = mrc.shape(micros.iterkeys().next())[1:]
+        micros = {key: micros[key] for key in micros if micros[key]['maxres'] < cfg.CTF_RES_THRESH}
+        shape  = mrc.shape(micros.iterkeys().next())[1:]
+        micro_chunks = part_idxs(micros.keys(),nbatches=nbatches)
+        basedir = os.path.basename(os.path.dirname(micros.iterkeys().next()))
+        return [MicrosGenerator({m:micros[m] for m in chunk}) for chunk in micro_chunks],basedir,shape
     def size(self):
         return len(self.__micros)
     def reset_state(self):
         pass
-    def get_base_dir(self):
-        return os.path.basename(os.path.dirname(self.__micros.iterkeys().next()))
-
+    # def get_base_dir(self):
+    #     return os.path.basename(os.path.dirname(self.__micros.iterkeys().next()))
     def get_data(self):
         for micro in self.__micros:
-            im = mrc.load(micro)[0]
-            yield im,self.__micros[micro]['ctf'],np.array(micro)
+            # im = mrc.load(micro)[0]
+            yield micro,self.__micros[micro]['ctf']
 
 def adjust_coodinates(coords,srcsz,dstsz,stride):
     '''Adjust coordinates from cropped feature plane to match the original image coordinates '''
@@ -148,24 +158,27 @@ def output_coords(bn,sz,outmicrodir,args):
     save_coords_in_star(starname, coords_orig)
     #### SAVE figure as well ######
     figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
-    imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, 2)
+    imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, 1)
     cv2.imwrite(figname,imrgb)
     # return number of particles
     return coords_orig.shape[0]
 
 def init_dataflow(ctfstar,batch_size):
     ''' This function creates dataflow that reads and preprocesses data in parallel '''
-    ds0 = ImageGenerator(ctfstar)
-    # normalizer operation
     augm = df.imgaug.AugmentorList([df.imgaug.MeanVarianceNormalize()])
-    ds1 = df.ThreadedMapData(
-        ds0, nr_thread=2*batch_size,
-        map_func=lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), dp[2]],
-        buffer_size=4*batch_size)
-    ds1 = df.PrefetchDataZMQ(ds1, nr_proc=1)
-    ds  = df.BatchData(ds1, batch_size)
+    # create partitioned generators, one for each element in a batch
+    dss0,basedir,shape = MicrosGenerator.create_partition(ctfstar,batch_size)
+    # preprocess input
+    dss1 = [df.MapData(ds0, lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), np.array(dp[0])]) for ds0 in dss0]
+    # prefetch each generator in a separate process with buffer of 2 images per process
+    # dss1 = [df.PrefetchDataZMQ(ds1, nr_proc=1, hwm=2) for ds1 in dss1]
+    dss1 = [df.PrefetchData(ds1, nr_prefetch = 2, nr_proc=1) for ds1 in dss1]
+    # join all dataflows
+    ds1  = df.RandomMixData(dss1)
+    # ds1  = df.JoinData(dss1)
+    ds   = df.BatchData(ds1, batch_size)
     ds.reset_state()
-    return ds0,ds
+    return ds,basedir,shape
 
 ########## Main starts here #######################################
 
@@ -212,17 +225,16 @@ bn = D / cfg.PART_D_PIXELS
 
 ####### Read Relion jobs infor and prepare picking params ########
 # create dataflow
-ds0,ds = init_dataflow(ctfstar,FLAGS.batch_size)
-outmicrodir = os.path.join(outdir,ds0.get_base_dir())
+ds,basedir,shape = init_dataflow(ctfstar,FLAGS.batch_size)
+outmicrodir = os.path.join(outdir,basedir)
 
 # initialize output directory
 ft.rmtree_assure(outdir)
 ft.mkdir_assure(outdir)
 ft.mkdir_assure(outmicrodir)
 
-
 ##################################################################
-tprint("Picking from %d micrographs with CTF better than %.2fA resolution" % (ds0.size(),cfg.CTF_RES_THRESH))
+tprint("Picking from ~%d micrographs with CTF better than %.2fA resolution" % (ds.size()*FLAGS.batch_size,cfg.CTF_RES_THRESH))
 with tf.Graph().as_default() as g:
     model    = Model.create_instance(FLAGS.model_path, 'test', FLAGS.tfrecord_dir)
     classes  = model._dataset.example_meta['classes']
@@ -255,7 +267,7 @@ with tf.Graph().as_default() as g:
 
             # parallel process probability and feature maps and ouput results
             # prepare output function for map
-            out_coords = partial(output_coords,bn,ds0.shape,outmicrodir)
+            out_coords = partial(output_coords,bn,shape,outmicrodir)
             prob_data  = zip(*[cls_prob_py,rpn_prob_py[...,cleanidx],dxy_pred_py])
             with poolcontext(processes=FLAGS.batch_size) as pool:
                 # convert probabilities into particle maps
@@ -269,13 +281,22 @@ with tf.Graph().as_default() as g:
             new_parts    = np.sum(nparts)
             part_count  += new_parts
             micro_count += len(pmaps)
-            tprint("micros %d/%d: parts %d/%d" % (micro_count, ds0.size(), new_parts, part_count))
-
-            # if part_count >= cfg.MAX_PARTICLES:
-            #     break
+            tprint("micros %d/%d: parts %d/%d" % (micro_count, ds.size()*FLAGS.batch_size, new_parts, part_count))
+            if part_count >= cfg.MAX_PARTICLES:
+                break
 
 ############## GARBAGE #################################
-            # check rpn_prob for problems
+
+        # ds0  = MicrosGenerator(ctfstar)
+        # normalizer operation
+        # ds1  = df.PrefetchData(ds0,2*batch_size,batch_size)
+        # ds1  = df.ThreadedMapData(
+        #     ds0, nr_thread=batch_size,
+        #     map_func=lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), np.array(dp[0])],
+        #     buffer_size=2*batch_size)
+        # ds1 = df.PrefetchDataZMQ(ds1, nr_proc=1)
+
+        # check rpn_prob for problems
             # regions  = regionprops(label(rpn_prob > cfg.PROB_THRESH))
             # areas = np.int32([r['Area'] for r in regions])
             # if np.any(areas > D**2):

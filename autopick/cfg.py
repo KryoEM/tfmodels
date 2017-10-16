@@ -41,7 +41,7 @@ CLS_CHANNELS = 64
 ############# EVALUATION ###################
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.7
+PROB_THRESH  = 0.60
 # the minimum value for the particle pixel "clearance" from neighbor particles presence
 # values in [0,1] 1-cleanest
 MIN_CLEARANCE = 0.1
