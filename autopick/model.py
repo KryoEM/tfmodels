@@ -12,12 +12,8 @@ from    model_generic import Model,prelu,rrelu,enet_pool,enet,enet_unpool,modifi
 from    autopick.tfrecorder import create_dataset
 from    autopick import cfg
 import  numpy as np
-import  os
 
 from   myplotlib import imshow,clf
-
-# WEIGHT_DECAY = 1e-7
-# ALPHA_DECAY  = 1e-5
 DD           = cfg.DD
 
 def create_instance(split_name,data_dir):

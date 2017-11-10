@@ -211,11 +211,11 @@ else:
     device = '/cpu:0'
 # ------------------------------------------------------------
 
-# ctfstar = '/jasper/result/GPCR_GI/CtfFind/job002/micrographs_ctf.star'
 ctfstar = '/jasper/result/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
-# ctfstar = '/jasper/result/Nucleosome_20170427_1821/CtfFind/job005/micrographs_ctf.star'
-# ctfstar = '/jasper/result/Braf_20170526_1206/CtfFind/job007/micrographs_ctf.star'
 outdir  = '/jasper/result/rhodopsin-Gi/cnnpick/'
+#
+# ctfstar = '/jasper/result/rhodopsin-Gi_new/CtfFind/job004/micrographs_ctf.star'
+# outdir  = '/jasper/result/rhodopsin-Gi_new/cnnpick/'
 
 psize = path2psize(ctfstar, 'CtfFind')
 # particle diameter in pixels

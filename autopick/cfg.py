@@ -41,12 +41,12 @@ CLS_CHANNELS = 64
 ############# EVALUATION ###################
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.60
+PROB_THRESH  = 0.5
 # the minimum value for the particle pixel "clearance" from neighbor particles presence
 # values in [0,1] 1-cleanest
 MIN_CLEARANCE = 0.1
 
-CTF_RES_THRESH = 4.0
+CTF_RES_THRESH = 4.5
 MAX_PARTICLES  = 1e8
 # particle circle line width
 CIRCLE_WIDTH = 2
