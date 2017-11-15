@@ -1,0 +1,7 @@
+split_ratios:
+- 0.95
+- 0.05
+
+onlytest: False
+shard_parallel: True
+use_gpu: False
