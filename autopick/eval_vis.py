@@ -5,12 +5,12 @@ import numpy as np
 from   arg_parsing import load_config
 from   gpu import pick_gpus_lowest_memory
 from   myplotlib import imshow,clf,savefig
-from   rpn.generate_anchors import generate_anchors
-from   rpn.bbox.bbox_transform import bbox_transform_inv,sized_to_4coords,revert_xy
-from   matplotlib import pyplot as plt
-import matplotlib.patches as patches
-from   scipy.ndimage.measurements import label
-from   utils import col_set_diff
+# from   rpn.generate_anchors import generate_anchors
+# from   rpn.bbox.bbox_transform import bbox_transform_inv,sized_to_4coords,revert_xy
+# from   matplotlib import pyplot as plt
+# import matplotlib.patches as patches
+# from   scipy.ndimage.measurements import label
+# from   utils import col_set_diff
 from   fileio import filetools as ft
 from   relion_params import path2psize,parse_ctf_star,path2part_diameter
 from   fileio import mrc
@@ -21,10 +21,10 @@ from   skimage.measure import label,regionprops
 from   tfrecorder import plot_class_coords
 from   star.tools import save_coords_in_star
 from   tensorpack import dataflow as df
-from   tensorpack import QueueInput,PrintData
+# from   tensorpack import QueueInput,PrintData
 from   utils import poolcontext
 from   functools import partial
-from   tfutils import config_gpus
+# from   tfutils import config_gpus
 from   utils import tprint,part_idxs
 from   image import plot_coord_rgb
 
@@ -34,7 +34,7 @@ from autopick import cfg
 def _load_checkpoint(sess):
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
     # load model
-    ckpt_path = ckpt.model_checkpoint_path
+    ckpt_path = os.path.join(FLAGS.checkpoint_dir,os.path.basename(ckpt.model_checkpoint_path))
     saver     = tf.train.Saver()
     saver.restore(sess, ckpt_path)
 
@@ -123,8 +123,9 @@ class MicrosGenerator():
         micros = {key: micros[key] for key in micros if micros[key]['maxres'] < cfg.CTF_RES_THRESH}
         shape  = mrc.shape(micros.iterkeys().next())[1:]
         micro_chunks = part_idxs(micros.keys(),nbatches=nbatches)
-        basedir = os.path.basename(os.path.dirname(micros.iterkeys().next()))
-        return [MicrosGenerator({m:micros[m] for m in chunk}) for chunk in micro_chunks],basedir,shape
+        # basedir = os.path.basename(os.path.dirname(micros.iterkeys().next()))
+        return [MicrosGenerator({m:micros[m] for m in chunk}) for chunk in micro_chunks],shape
+
     def size(self):
         return len(self.__micros)
     def reset_state(self):
@@ -142,11 +143,19 @@ def adjust_coodinates(coords,srcsz,dstsz,stride):
     coords = coords*stride + unpadl[None,:]
     return coords
 
-def output_coords(bn,sz,outmicrodir,args):
+def output_coords(bn,sz,base_dir,outdir,args):
     '''Converts particle maps into coordinates and saves coordinates with the png file'''
     pmap,imdisp,micro = args
+    microname   = ft.file_only(micro)
+    outmicrodir = os.path.join(outdir,ft.remove_prefix(os.path.dirname(micro),base_dir)[1:])
+    ft.mkdir_assure(outmicrodir)
+
     # particle coordinates in the original micrograph coordinates
     coords = np.column_stack(np.where(pmap > cfg.MIN_CLEARANCE))
+    if coords.shape[0] < cfg.MIN_PART_PER_MICRO:
+        print "Too few particles detected %d, dropping micrograph %s ..." % (coords.shape[0],microname)
+        # coords = np.zeros((0,2),dtype=np.float32)
+        return 0
     szpmap = np.int32(pmap.shape)
     szdisp = np.int32(imdisp.shape[:2])
     szbn   = utils.np.int32(np.round(sz / bn))
@@ -154,10 +163,10 @@ def output_coords(bn,sz,outmicrodir,args):
     coords_disp = adjust_coodinates(coords, szpmap, szdisp, cfg.STRIDES[0])
     # original micrograph coordinate system
     coords_orig = adjust_coodinates(coords, szpmap, szbn, cfg.STRIDES[0])*bn
-    starname    = os.path.join(outmicrodir, ft.file_only(micro) + '_manualpick.star')
+    starname    = os.path.join(outmicrodir, microname + '_manualpick.star')
     save_coords_in_star(starname, coords_orig)
     #### SAVE figure as well ######
-    figname = os.path.join(outmicrodir, ft.file_only(micro) + '.png')
+    figname = os.path.join(outmicrodir, microname + '.png')
     imrgb   = plot_coord_rgb(np.squeeze(imdisp), {'particles': coords_disp}, cfg.PART_D_PIXELS, cfg.CIRCLE_WIDTH)
     cv2.imwrite(figname,imrgb)
     # return number of particles
@@ -167,7 +176,7 @@ def init_dataflow(ctfstar,batch_size):
     ''' This function creates dataflow that reads and preprocesses data in parallel '''
     augm = df.imgaug.AugmentorList([df.imgaug.MeanVarianceNormalize()])
     # create partitioned generators, one for each element in a batch
-    dss0,basedir,shape = MicrosGenerator.create_partition(ctfstar,batch_size)
+    dss0,shape = MicrosGenerator.create_partition(ctfstar,batch_size)
     # preprocess input
     dss1 = [df.MapData(ds0, lambda dp: [augm.augment(preprocess_micro(dp[0], dp[1], psize, bn)), np.array(dp[0])]) for ds0 in dss0]
     # prefetch each generator in a separate process with buffer of 4 images per process
@@ -178,7 +187,7 @@ def init_dataflow(ctfstar,batch_size):
     # ds1  = df.JoinData(dss1)
     ds   = df.BatchData(ds1, batch_size)
     ds.reset_state()
-    return ds,basedir,shape
+    return ds,shape
 
 ########## Main starts here #######################################
 
@@ -211,8 +220,12 @@ else:
     device = '/cpu:0'
 # ------------------------------------------------------------
 
-ctfstar = '/jasper/result/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
-outdir  = '/jasper/result/rhodopsin-Gi/cnnpick/'
+# ctfstar = '/shared/results/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
+# outdir  = '/shared/results/rhodopsin-Gi/cnnpick/'
+base_dir = '/shared/results/rhodopsin-Gi'
+ctfstar = os.path.join(base_dir,'CtfFind/11k_mixed/micrographs_ctf.star')
+outdir  = os.path.join(base_dir,'cnnpick/')
+
 #
 # ctfstar = '/jasper/result/rhodopsin-Gi_new/CtfFind/job004/micrographs_ctf.star'
 # outdir  = '/jasper/result/rhodopsin-Gi_new/cnnpick/'
@@ -225,13 +238,12 @@ bn = D / cfg.PART_D_PIXELS
 
 ####### Read Relion jobs infor and prepare picking params ########
 # create dataflow
-ds,basedir,shape = init_dataflow(ctfstar,FLAGS.batch_size)
-outmicrodir = os.path.join(outdir,basedir)
+ds,shape = init_dataflow(ctfstar,FLAGS.batch_size)
+# outmicrodir = os.path.join(outdir,basedir)
 
 # initialize output directory
 ft.rmtree_assure(outdir)
 ft.mkdir_assure(outdir)
-ft.mkdir_assure(outmicrodir)
 
 ##################################################################
 tprint("Picking from ~%d micrographs with CTF better than %.2fA resolution" % (ds.size()*FLAGS.batch_size,cfg.CTF_RES_THRESH))
@@ -267,16 +279,18 @@ with tf.Graph().as_default() as g:
 
             # parallel process probability and feature maps and ouput results
             # prepare output function for map
-            out_coords = partial(output_coords,bn,shape,outmicrodir)
+            out_coords = partial(output_coords,bn,shape,base_dir,outdir)
             prob_data  = zip(*[cls_prob_py,rpn_prob_py[...,cleanidx],dxy_pred_py])
+
             with poolcontext(processes=FLAGS.batch_size) as pool:
                 # convert probabilities into particle maps
                 pmaps = pool.map(calc_single_score_per_particle,prob_data)
                 # convert particle maps to coordinates and save results
                 out_data = zip(*[pmaps,dp[0],dp[1]])
                 nparts = pool.map(out_coords, out_data)
-            # for pmap,im,micro in zip(*[pmaps,dp[0],dp[1]]):
-            #     output_map(bn,ds0.shape,outmicrodir,(pmap,im,micro))
+
+            # pmaps  = map(calc_single_score_per_particle, prob_data)
+            # nparts = map(out_coords, zip(*[pmaps,dp[0],dp[1]]))
 
             new_parts    = np.sum(nparts)
             part_count  += new_parts

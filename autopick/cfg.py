@@ -29,7 +29,7 @@ STRIDES       = [8]
 L1_SIGMA = 5.0
 
 # number of channels in the first convolution layer
-CONV0_CHANNELS = 16
+CONV0_CHANNELS = 8
 # squeeze factor
 DD = 8
 
@@ -41,10 +41,12 @@ CLS_CHANNELS = 64
 ############# EVALUATION ###################
 
 # probability threshold for particle detection
-PROB_THRESH  = 0.5
+PROB_THRESH  = 0.8
 # the minimum value for the particle pixel "clearance" from neighbor particles presence
 # values in [0,1] 1-cleanest
 MIN_CLEARANCE = 0.1
+# skip a micrograph if it has too few particles
+MIN_PART_PER_MICRO = 20
 
 CTF_RES_THRESH = 4.5
 MAX_PARTICLES  = 1e8

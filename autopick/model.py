@@ -31,32 +31,22 @@ class AutopickModel(Model):
         depth = net.shape[-1]._value
         # Feature extractor part is shared for all heads
         with tf.variable_scope(scope, reuse=reuse):
-            base_conv = enet(net, depth // DD, depth, scope='base_conv_0', reuse=reuse)
-            # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_1', reuse=reuse)
-            # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_2', reuse=reuse)
-            # base_conv = enet(base_conv, depth // DD, depth, scope='base_conv_3', reuse=reuse)
-
-            # use a separate head for each task
-            # score_conv = enet(base_conv, depth // DD, depth, scope='score_conv_0', reuse=reuse)
-            # dxy_conv   = enet(base_conv, depth // DD, depth, scope='dxy_conv_0', reuse=reuse)
-            # aux_conv   = enet(net, depth // DD, depth, scope='aux_conv_0', reuse=reuse)
+            base_conv  = enet(net, depth // DD, depth, scope='base_conv_0', reuse=reuse)
             # auxilliary channels for classification
             cls_aux    = slim.conv2d(base_conv, cfg.N_CLS_AUX_CHANNELS, [1, 1], scope='cls_aux',reuse=reuse)
             # score for classification
-            rpn_score = slim.conv2d(base_conv, nclasses, [1, 1], activation_fn=None,normalizer_fn=None, scope='rpn_score',reuse=reuse)
+            rpn_score  = slim.conv2d(base_conv, nclasses, [1, 1], activation_fn=None,normalizer_fn=None, scope='rpn_score',reuse=reuse)
             # coordinate correction prediction
-            dxy_pred  = slim.conv2d(base_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='dxy_pred',reuse=reuse)
+            dxy_pred   = slim.conv2d(base_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='dxy_pred',reuse=reuse)
 
             # combine rpn, dxy and aux channels
-            cls_conv  =  tf.concat(axis=3, values=[rpn_score,dxy_pred,cls_aux])
+            cls_conv   =  tf.concat(axis=3, values=[rpn_score,dxy_pred,cls_aux])
 
             # convert to cls channel depth
-            depth     = cfg.CLS_CHANNELS
-            cls_conv  = slim.conv2d(cls_conv, depth, [1, 1], scope='cls_conv_0',reuse=reuse)
-            cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_0', reuse=reuse)
-            # cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_1', reuse=reuse)
-            # cls_conv  = enet(cls_conv, depth // DD, depth, scope='cls_enet_2', reuse=reuse)
-            cls_score = slim.conv2d(cls_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='cls_score',reuse=reuse)
+            depth      = cfg.CLS_CHANNELS
+            cls_conv   = slim.conv2d(cls_conv, depth, [1, 1], scope='cls_conv_0',reuse=reuse)
+            cls_conv   = enet(cls_conv, depth // DD, depth, scope='cls_enet_0', reuse=reuse)
+            cls_score  = slim.conv2d(cls_conv, 2, [1, 1], activation_fn=None,normalizer_fn=None, scope='cls_score',reuse=reuse)
             return rpn_score,dxy_pred,cls_score
 
     @staticmethod
