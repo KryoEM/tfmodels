@@ -4,8 +4,14 @@ import numpy as np
 from   star import star
 from   ctf  import CTF
 
-JOB2UPDIRS={'Select':2,
-            'CtfFind':2}
+JOB2UPDIRS={'Select':2,'CtfFind':2}
+
+def path2part_diameter(path):
+    ''' Read particle diameter from manual picking job '''
+    jobfile = os.path.join(ft.updirs(path, 2), '.gui_manualpickrun.job')
+    line    = ft.get_line(jobfile, 'Particle diameter')
+    return np.float32(line.split('==')[1])
+    # return part_d_from_jobfile(jobfile)
 
 def path2psize(path,jobname):
     ''' Read particle diameter from manual picking job.
@@ -41,10 +47,3 @@ def parse_ctf_star(ctfstar):
         key = os.path.join(root,rec['MicrographName'])
         micros.update({key:{'ctf':CTF(**rec),'maxres': np.float32(rec['CtfMaxResolution'])}})
     return micros
-
-def path2part_diameter(path):
-    ''' Read particle diameter from manual picking job '''
-    jobfile = os.path.join(ft.updirs(path, 2), '.gui_manualpickrun.job')
-    line    = ft.get_line(jobfile, 'Particle diameter')
-    return np.float32(line.split('==')[1])
-    # return part_d_from_jobfile(jobfile)
