@@ -5,14 +5,25 @@ from   myplotlib import imshow,clf
 import numpy as np
 from   gpu import pick_gpus_lowest_memory
 import os
+from   symmetry import Symmetry
 
 
-def fftfix_values(x):
-    ''' inverts last half of x '''
-    len   = x.shape[0]
-    c     = len - len//2
-    x[c:] = len - x[c:]
-    return x
+def fftfix(xyz,len):
+    ''' inverts second half of x '''
+    c        = len - len//2
+    # invert all coordinates that cross image center
+    loc      = xyz >= c
+    # xys.max = len-1 => -1
+    xyz[loc] -= len #- xyz[loc] - 2.0
+    return xyz
+
+def ifftfix(xyz,len):
+    ''' inverts second half of x '''
+    # invert all coordinates that cross image center
+    # xyz = -1 => len-1
+    loc      = xyz < -0.5
+    xyz[loc] += len # - xyz[loc] - 2.0
+    return xyz
 
 vfile = '/jasper/models/gp140/EMDB5019.mrc'
 # vfile = '/jasper/models/BetaGal/betagal1.5.mrc'
@@ -24,13 +35,24 @@ vlen = v.shape[0]
 
 x,y = np.mgrid[:vlen,:vlen]
 z   = np.zeros((vlen,vlen),np.float32)
+xyz = np.dstack([x,y,z]) # construct triplets
 # fix origin
-x,y,z = fftfix_values(x),fftfix_values(y),fftfix_values(z)
+xyz = fftfix(xyz,vlen)
+# x,y,z = fftfix_values(x),fftfix_values(y),fftfix_values(z)
 # apply rotation
+M = Symmetry('c3').orient_matrices(10.0)
+
+planesxyz = np.zeros(M.shape[:2]+(vlen,vlen,3),dtype=np.float32)
+for n in range(M.shape[0]):
+    for o in range(M.shape[1]):
+        planesxyz[n,o] = np.dot(xyz,M[n,o])
+
 # unfix origin
-x,y,z = fftfix_values(x),fftfix_values(y),fftfix_values(z)
-xyz   = np.int32(np.round(np.dstack([x,y,z])))
-xyz   = np.stack([xyz,xyz])
+planesxyz = ifftfix(planesxyz,vlen)
+# x,y,z = fftfix_values(x),fftfix_values(y),fftfix_values(z)
+
+# xyz   = np.int32(np.round(np.dstack([x,y,z])))
+# xyz   = np.stack([xyz,xyz])
 
 # define 3d input
 V       = tf.placeholder(tf.complex64, shape=(vlen, vlen, vlen))
@@ -50,12 +72,11 @@ with tf.Session(config=session_config) as sess:
     sess.run(loc_init)
     sess.run(glob_init)
 
-    VS_py = sess.run(VS,feed_dict={V:v,planes:xyz})
+    VS_py = sess.run(VS,feed_dict={V:v,planes:np.int32(np.round(planesxyz[0,[1]]))})
 
-
-vi = np.fft.ifft2(VS_py[1])
-
-
+imshow(np.abs(VS_py[0]))
+vi = np.fft.ifft2(VS_py[0])
+imshow(np.real(vi))
 
 #
 # # create 2D coordinates in fft domain
