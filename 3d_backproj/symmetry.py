@@ -47,9 +47,8 @@ class Symmetry(object):
         aloc = np.logical_or(alt == 0.0, alt == 180.0)
         az[aloc] = 0.0
 
-        # select orientations insde the asymmetric unit
-        isin = np.array([sym.is_in_asym_unit(float(az[v]), float(alt[v]), True) \
-                         for v in range(nvec)])
+        # select orientations inside the asymmetric unit, including mirrors (True)
+        isin  = np.array([sym.is_in_asym_unit(float(az[v]), float(alt[v]), True) for v in range(nvec)])
         azin  = az[isin]
         altin = alt[isin]
         ors   = [EMAN2.Transform({"type": "eman", "az": float(a), "alt": float(al), "phi": 0.0}) for a, al in zip(azin, altin)]
