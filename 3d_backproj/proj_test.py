@@ -8,26 +8,29 @@ import numpy as np
 from   gpu import pick_gpus_lowest_memory
 import os
 from   networks import Proj
+from   image import make_cubic
 
 if __name__ == "__main__":
 
-    vfile = '/jasper/models/gp140/EMDB5019.mrc'
-    # vfile = '/jasper/models/BetaGal/betagal1.5.mrc'
+    # vfile = '/jasper/data/train_data_sets/backproj/checkpoint/volume.mrc'
+    # vfile = '/jasper/models/gp140/EMDB5019.mrc'
+    vfile = '/jasper/models/BetaGal/betagal1.5.mrc'
 
     with mrcfile.open(vfile) as mrc:
-        v = mrc.data
+        v = make_cubic(mrc.data)
 
     # move z axis to first position to match EMAN symmetry convention
     v    = np.transpose(v,[2,1,0])
+
     # move symmetry axis to match EMAN convention
-    # v    = np.roll(v,-1,axis=(1,2))
+    # v    = np.roll(v,-1,axis=(0,1,2))
 
     vlen = v.shape[0]
     vs   = np.fft.ifftshift(v)
 
     # define 3d input
     V    = tf.placeholder(tf.complex64, shape=(vlen, vlen, vlen))
-    proj = Proj(vlen,10.0,'c3')
+    proj = Proj(vlen,10.0,'d2')
     P    = proj(V)
 
     gpuid = pick_gpus_lowest_memory(1, 0)[0]
@@ -41,18 +44,17 @@ if __name__ == "__main__":
         sess.run(loc_init)
         sess.run(glob_init)
         feed_dict = {V: vs}
-        feed_dict.update(proj.feed_dict())
+        # feed_dict.update(proj.feed_dict())
         P_py = sess.run(P,feed_dict=feed_dict)
-
 
     vi1 = np.fft.fftshift(P_py[0,1])
     imshow(vi1)
     vi2 = np.fft.fftshift(P_py[1,1])
     imshow(vi2)
 
-    np.save('/jasper/models/gp140/P_py.npy',P_py)
+    fname,ext = os.path.splitext(vfile)
+    np.save(fname+'_projections.npy',P_py)
 
-    a = 1
 ############# JUNK #############################
 # imshow(np.real(vi1-vi2))
 # vi2 = np.fft.fftshift(np.fft.ifft2(VS_py[1,1]))
