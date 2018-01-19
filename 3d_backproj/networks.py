@@ -8,6 +8,7 @@ from   symmetry import Symmetry
 from   canton.cans import Can,Conv2DFull,BatchRenorm,Conv2D,PReLU,rnn_gen,Dense,AvgPool2D,MaxPool2D
 from   tensorpack import models
 import cfg
+from   tfutils import get_visible_device_list,get_available_gpus,config_gpus
 from   myplotlib import imshow
 
 def fftfix(xyz,len):
@@ -109,56 +110,50 @@ class Backproj(Can):
         self._proj     = Proj(vlen, delta_deg, symmetry)
 
     def score(self,Pin):
+        gpus = get_available_gpus()
+
         # projection onto all symmetric units
-        V      = tf.complex(self._Vr,self._Vi)
-        # nviews = self._proj._nviews
-        # P  = self._proj(V)
+        with tf.device(gpus[0]):
+            V    = tf.complex(self._Vr,self._Vi)
+            # Obtain fourier slices
+            F    = self._proj.fft2D(V)
 
-        # fourier slices
-        F    = self._proj.fft2D(V)
-        Fin  = tf.fft2d(tf.cast(Pin,tf.complex64))
+            # Calculate laplace/l1 regularization
+            b    = tf.exp(self._logb)
+            l1   = tf.reduce_mean(tf.abs(self._Vr))/b
+            l1  += self._logb
 
-        # nviews x nsym x ncandidates x w x h
-        # diff = F[:,:,None,...] - tf.tile(Fin[None,...],(nviews,1,1,1))[None,...]
-        diff = F[:,None,...] - Fin[None,...]
+        with tf.device(gpus[1]):
+            # obtain difference between reference and input
+            Fin  = tf.fft2d(tf.cast(Pin,tf.complex64))
+            # nviews x nsym x ncandidates x w x h
+            diff = F[:,None,...] - Fin[None,...]
+            l2   = tf.real(diff*tf.conj(diff))
 
-        ls2  = tf.gather(self._logsig2,self._1D_2D)
-        s2   =  tf.exp(ls2)
+        with tf.device(gpus[2]):
+            ls2  = tf.gather(self._logsig2,self._1D_2D)
+            s2   =  tf.exp(ls2)
 
-        l2   = tf.real(diff*tf.conj(diff))
+            # average over all symmetries
+            l2   = tf.reduce_mean(l2,axis=0)
+            # weight candidates
+            l2   = tf.reduce_sum(l2*tf.nn.softmax(self._alph,dim=0),axis=0)
+            # average over views
+            l2   = tf.reduce_mean(l2,axis=0)
+            # normalize by noise variance
+            l2   = l2/(2.0*s2) #[None,...])
+            # average over all frequency components
+            l2   = tf.reduce_mean(l2,axis=(-1,-2))
 
-        # average over all symmetries
-        l2   = tf.reduce_mean(l2,axis=0)
+            # add mean of logvar over frequency components
+            l2  += tf.reduce_mean(self._logsig2)
 
-        # weight candidates
-        l2   = tf.reduce_sum(l2*tf.nn.softmax(self._alph,dim=0),axis=0)
+            # log likelihood
+            ll   = l2 + l1
 
-        # average over views
-        l2   = tf.reduce_mean(l2,axis=0)
-
-        # normalize by noise variance
-        l2   = l2/(2.0*s2) #[None,...])
-        # l2   = huber(l2/s2[None,...],10.0)
-
-        # average over all frequency components
-        l2   = tf.reduce_mean(l2,axis=(-1,-2))
-
-        # add mean of logvar over frequency components
-        l2  += tf.reduce_mean(self._logsig2)
-
-        # laplace/l1 regularization
-        b    = tf.exp(self._logb)
-        l1   = tf.reduce_mean(tf.abs(self._Vr))/b
-        l1  += self._logb
-
-        # log likelihood
-        ll   = l2 + l1
-
-        # remove average over views and candidates to avoid too small values in the exponent
-        ll  -= 0.9*tf.stop_gradient(ll)
-
-        # lhood = tf.exp(-tf.reduce_mean(l2)-l1)
-        lhood = tf.exp(-ll)
+            # remove average over views and candidates to avoid too small values in the exponent
+            ll  -= cfg.EXP_NORM*tf.stop_gradient(ll)
+            lhood = tf.exp(-ll)
 
         tf.summary.scalar('ll', ll)
         # tf.summary.scalar('factor ', tf.exp(logfact))
@@ -169,6 +164,10 @@ class Backproj(Can):
 
 
 ##################### GARBAGE ####################################
+        # nviews = self._proj._nviews
+        # P  = self._proj(V)
+
+        # diff = F[:,:,None,...] - tf.tile(Fin[None,...],(nviews,1,1,1))[None,...]
         # l2  -= tf.stop_gradient(tf.reduce_mean(l2))
         # frequency radius
         # r    = self._vlen//2

@@ -6,7 +6,7 @@ from   canton.cans import Can,BatchRenorm,Conv2D,PReLU,rnn_gen,Dense,AvgPool2D,M
 import tensorflow as tf
 import numpy as np
 from   tensorpack import (ModelDesc,InputDesc,get_current_tower_context,GraphProfiler,
-                          get_nr_gpu,optimizer,Callback,TrainConfig,logger,
+                          get_nr_gpu,optimizer,Callback,TrainConfig,logger,PeakMemoryTracker,
                           QueueInput,PeriodicTrigger,ModelSaver,get_model_loader,HyperParamSetter,
                           ScheduledHyperParamSetter,HyperParamSetterWithFunc,GPUUtilizationTracker,
                           SyncMultiGPUTrainerReplicated,SimpleTrainer,launch_train_with_config)
@@ -18,7 +18,7 @@ from   tensorpack.tfutils.sessinit import ChainInit,TryResumeTraining # SaverRes
 from   tensorpack.tfutils.common import get_global_step_var
 import os
 import argparse
-from   tfutils import get_visible_device_list,config_gpus
+from   tfutils import get_visible_device_list,get_available_gpus,config_gpus
 from   myplotlib import imshow,clf
 import mrcfile
 
@@ -88,11 +88,10 @@ if __name__ == '__main__':
     # P_py  = np.load('/jasper/models/gp140/P_py.npy')
     Ppy    = np.load('/jasper/models/BetaGal/betagal1.5_projections.npy')
 
-    Ppy    = Ppy[0] # leave only first symmetric unit
-    vlen   = Ppy.shape[-1]
-    nviews = Ppy.shape[0]
+    Ppy         = Ppy[0] # leave only first symmetric unit
+    vlen,nviews = Ppy.shape[-1],Ppy.shape[0]
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = get_visible_device_list(1)
+    os.environ['CUDA_VISIBLE_DEVICES'] = get_visible_device_list(3)
     global_step = get_global_step_var()
 
     # set logger directory for checkpoints, etc
@@ -100,6 +99,7 @@ if __name__ == '__main__':
 
     steps_per_epoch = cfg.EPOCH_STEPS
     model    = Model(vlen,nviews)
+    # config.gpu_options.allow_growth = True
     traincfg = TrainConfig(
                 model = model,
                 data  = QueueInput(ProjDataFlow(Ppy)),
@@ -109,15 +109,16 @@ if __name__ == '__main__':
                     # prevent learning in the first epoch
                     # MemInitHyperParamSetter('learning_rate_mask',(0,1)),
                     # controls learning rate as a function of epoch
-                    HyperParamSetterWithFunc('learning_rate',learning_rate_fun)
+                    HyperParamSetterWithFunc('learning_rate',learning_rate_fun),
                     # GraphProfiler()
+                    # PeakMemoryTracker()
                     # GPUUtilizationTracker(),
                 ],
                 steps_per_epoch=steps_per_epoch,
                 max_epoch=200000,
                 # first time load model from checkpoint and reset GRU state
-                session_init=ChainInit([TryResumeTraining()])#,ResetInit(model)])
-                #session_config=tf.ConfigProto(log_device_placement=True) #config_gpus(1)
+                session_init   = ChainInit([TryResumeTraining()]),#,ResetInit(model)])
+                # session_config=tf.ConfigProto(log_device_placement=True) #config_gpus(1)
     )
 
     trainer = SimpleTrainer()
@@ -125,6 +126,12 @@ if __name__ == '__main__':
     launch_train_with_config(traincfg, trainer)
 
 ################# JUNK ###############
+
+    # config = tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
+    # workaround
+    # with tf.Session(config=config):
+    #     pass
+
     # Pin = tf.placeholder(tf.float32, shape=P_py.shape)
     # backp = Backproj(vlen, 10.0, 'c3')
     # l = backp.score(Pin)
