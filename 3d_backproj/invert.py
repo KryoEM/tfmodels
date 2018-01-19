@@ -36,7 +36,7 @@ class Model(ModelDesc):
     def _get_inputs(self):
         return [
             # assumes only one symmetric unit as input batch x  vlen x vlen
-            InputDesc(tf.float32, (self._nviews, self._vlen, self._vlen), 'projections'),
+            InputDesc(tf.float32, (cfg.NCAND, self._nviews, self._vlen, self._vlen), 'projections'),
         ]
 
     def _build_graph(self, input):
@@ -56,8 +56,6 @@ class Model(ModelDesc):
         tf.summary.scalar('learning_rate', lr)
         return tf.train.AdamOptimizer(lr)
         # return tf.train.GradientDescentOptimizer(lr)
-
-
 
     def get_volume(self):
         return self._backproj._Vr

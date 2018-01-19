@@ -54,11 +54,12 @@ def polar_index_fft_2D(vlen):
 class Proj(Can):
     # noinspection PyCompatibility
     def __init__(self, vlen, delta_deg, symmetry):
-        # super(Proj, self).__init__()
-        super().__init__()
+        super(Proj, self).__init__()
+        # super().__init__()
         # actual plane coordinates in 3D
         planes_data  = calc_planes_data_fft_3D(vlen,delta_deg,symmetry)
         self._planes = tf.convert_to_tensor(planes_data,dtype=tf.int32)
+        self._nsym,self._nviews = planes_data.shape[:2]
         # self._planes = tf.placeholder(tf.int32, shape=(None,None,vlen, vlen, 3),name='plane_coords_3D')
 
     def fft2D(self,V):
@@ -74,56 +75,121 @@ class Proj(Can):
         # tensor of 2D projections in space domain
         return tf.real(tf.ifft2d(VS))
 
-    def nsym(self):
-        return tf.shape(self._planes.shape)[0]
+    # def nsym(self):
+    #     return tf.shape(self._planes.shape)[0]
+    #
+    # def nviews(self):
+    #     return
 
     def __call__(self,V):
         ''' network that inputs a tensor volume and projects it to all symmetrical units '''
         return self.space2D(V)
 
+def huber(a,lam):
+    return (lam**2)*(tf.sqrt(1.0+a/(lam**2))-1.0)
+
 class Backproj(Can):
     def __init__(self, vlen, nviews, delta_deg, symmetry):
         super(Backproj, self).__init__()
+        MEAN_VAL = 1.0
         # super().__init__()
         # this is the backprojected volume
         self._Vr    = tf.get_variable('vol_real', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=True)
         # we don't want the imaginary part to change, so trainable=False
         self._Vi    = tf.get_variable('vol_imag', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=False)
         # coefficients that will select which candidates contribute to the view average
-        # self._alph  = tf.get_variable('alpha', dtype=tf.float32, shape=(nviews,1,1,cfg.NCAND),initializer=tf.ones_initializer(),trainable=False)
+        self._alph  = tf.get_variable('alpha', dtype=tf.float32, shape=(cfg.NCAND,nviews,1,1),initializer=tf.zeros_initializer(),trainable=True)
         # 1D represenation for radial log variances
         self._logsig2  = tf.get_variable('logsig2', dtype=tf.float32,
-                                      initializer=tf.constant(np.log(vlen*vlen*(2*np.pi*np.arange(vlen//2,dtype=np.float32)+1.0)),np.float32),
+                                      initializer=tf.constant(np.log((MEAN_VAL**2)*(vlen**2)*(2*np.pi*np.arange(vlen//2,dtype=np.float32)+1.0)),np.float32),
                                       trainable=True)
-        self._vlen  = vlen
-        self._1D_2D =  tf.convert_to_tensor(polar_index_fft_2D(vlen),dtype=tf.int32)
-        self._proj  = Proj(vlen, delta_deg, symmetry)
+        self._logb     = tf.get_variable('logb', dtype=tf.float32,initializer=tf.constant(np.float32(np.log(MEAN_VAL))),trainable=True)
+        self._vlen     = vlen
+        self._1D_2D    =  tf.convert_to_tensor(polar_index_fft_2D(vlen),dtype=tf.int32)
+        self._proj     = Proj(vlen, delta_deg, symmetry)
 
     def score(self,Pin):
         # projection onto all symmetric units
-        # frequency radius
-        # r    = self._vlen//2
-        # number of symmetric units
-        # nsym = tf.cast(self._proj.nsym(),tf.float32)
-        # number of input elements
-        # nels = tf.cast(tf.shape(Pin)[0],tf.float32)
-        V    = tf.complex(self._Vr,self._Vi)
+        V      = tf.complex(self._Vr,self._Vi)
+        # nviews = self._proj._nviews
         # P  = self._proj(V)
 
         # fourier slices
         F    = self._proj.fft2D(V)
         Fin  = tf.fft2d(tf.cast(Pin,tf.complex64))
 
-        # tf.summary.scalar('Fin', tf.reduce_mean(tf.cast(Fin[-2,-1]*tf.conj(Fin[-2,-1]),tf.float32)))
-        # tf.summary.scalar('Pin', tf.reduce_mean(tf.cast(Pin[-2,-1]*tf.conj(Pin[-2,-1]),tf.float32)))
-
-        diff = F - Fin[None,...]
-        err2 = tf.real(diff*tf.conj(diff))
+        # nviews x nsym x ncandidates x w x h
+        # diff = F[:,:,None,...] - tf.tile(Fin[None,...],(nviews,1,1,1))[None,...]
+        diff = F[:,None,...] - Fin[None,...]
 
         ls2  = tf.gather(self._logsig2,self._1D_2D)
         s2   =  tf.exp(ls2)
 
-        # glob_init = tf.global_variables_initializer()
+        l2   = tf.real(diff*tf.conj(diff))
+
+        # average over all symmetries
+        l2   = tf.reduce_mean(l2,axis=0)
+
+        # weight candidates
+        l2   = tf.reduce_sum(l2*tf.nn.softmax(self._alph,dim=0),axis=0)
+
+        # average over views
+        l2   = tf.reduce_mean(l2,axis=0)
+
+        # normalize by noise variance
+        l2   = l2/(2.0*s2) #[None,...])
+        # l2   = huber(l2/s2[None,...],10.0)
+
+        # average over all frequency components
+        l2   = tf.reduce_mean(l2,axis=(-1,-2))
+
+        # add mean of logvar over frequency components
+        l2  += tf.reduce_mean(self._logsig2)
+
+        # laplace/l1 regularization
+        b    = tf.exp(self._logb)
+        l1   = tf.reduce_mean(tf.abs(self._Vr))/b
+        l1  += self._logb
+
+        # log likelihood
+        ll   = l2 + l1
+
+        # remove average over views and candidates to avoid too small values in the exponent
+        ll  -= 0.9*tf.stop_gradient(ll)
+
+        # lhood = tf.exp(-tf.reduce_mean(l2)-l1)
+        lhood = tf.exp(-ll)
+
+        tf.summary.scalar('ll', ll)
+        # tf.summary.scalar('factor ', tf.exp(logfact))
+        tf.summary.scalar('b', b)
+        tf.summary.scalar('sig2', tf.reduce_sum(self._logsig2))
+
+        return tf.identity(-lhood,'cost')
+
+
+##################### GARBAGE ####################################
+        # l2  -= tf.stop_gradient(tf.reduce_mean(l2))
+        # frequency radius
+        # r    = self._vlen//2
+        # number of symmetric units
+        # nsym = tf.cast(self._proj.nsym(),tf.float32)
+        # number of input elements
+        # nels = tf.cast(tf.shape(Pin)[0],tf.float32)
+
+        # aqverage result over samples
+        # lhood = tf.reduce_mean(err2)
+
+        # l2 = tf.sqrt(tf.reduce_mean(err))/self._vlen
+
+        # l1 = tf.reduce_mean(av)/tf.maximum(tf.stop_gradient(tf.reduce_mean(av)),1e-9)
+        # clone input projections across all symmetric units
+        # return l2 +l1#+1000.0*tf.reduce_sum(alph**4)
+
+        # tf.summary.scalar('Fin', tf.reduce_mean(tf.cast(Fin[-2,-1]*tf.conj(Fin[-2,-1]),tf.float32)))
+        # tf.summary.scalar('Pin', tf.reduce_mean(tf.cast(Pin[-2,-1]*tf.conj(Pin[-2,-1]),tf.float32)))
+
+       # glob_init = tf.global_variables_initializer()
         # loc_init = tf.local_variables_initializer()
         # with tf.Session().as_default() as sess:
         #    with tf.Graph().as_default() as g:
@@ -133,43 +199,6 @@ class Backproj(Can):
         #             coord = tf.train.Coordinator()
         #             tf.train.start_queue_runners(coord=coord)
         #             Pin_py,Fin_py = sess.run([Pin,Fin])
-
-
-        # average over all symmetries
-        err2 = tf.reduce_mean(err2,axis=(0,))
-        # normalize by noise variance
-        err2 = err2/(2.0*s2[None,...])
-
-
-        # average over all frequency components
-        err2 = tf.reduce_mean(err2,axis=(-1,-2))
-
-        # add mean of logvar over frequency components
-        err2 += tf.reduce_mean(self._logsig2)
-
-        # remove average over samples to avoid too small values in the exponent
-        logfact = tf.reduce_min(err2)
-        err2 -= tf.stop_gradient(logfact)
-        # this log likelihood is normalized to start at 1.0
-        lhood = tf.exp(-tf.reduce_mean(err2))
-
-        tf.summary.scalar('log lhood', tf.log(lhood))
-        tf.summary.scalar('factor ', tf.exp(logfact))
-        tf.summary.scalar('sig2 ', tf.reduce_sum(self._logsig2))
-
-        # aqverage result over samples
-        # lhood = tf.reduce_mean(err2)
-
-        # l2 = tf.sqrt(tf.reduce_mean(err))/self._vlen
-
-        av = tf.abs(self._Vr)
-        l1 = tf.reduce_mean(av)/tf.maximum(tf.stop_gradient(tf.reduce_mean(av)),1e-9)
-        # clone input projections across all symmetric units
-        # return l2 +l1#+1000.0*tf.reduce_sum(alph**4)
-        return -lhood + cfg.L1W*l1
-
-
-##################### GARBAGE ####################################
 
 # def score_matrix(vlen,name=None):
 #     # contruct comparison can
