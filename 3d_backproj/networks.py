@@ -92,25 +92,25 @@ def huber(a,lam):
 class Backproj(Can):
     def __init__(self, vlen, nviews, delta_deg, symmetry):
         super(Backproj, self).__init__()
-        MEAN_VAL = 1.0
         # super().__init__()
         # this is the backprojected volume
-        self._Vr    = tf.get_variable('vol_real', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=True)
+        self._Vr       = tf.get_variable('vol_real', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=True)
         # we don't want the imaginary part to change, so trainable=False
-        self._Vi    = tf.get_variable('vol_imag', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=False)
+        self._Vi       = tf.get_variable('vol_imag', dtype=tf.float32, shape=(vlen,)*3,initializer=tf.zeros_initializer(),trainable=False)
         # coefficients that will select which candidates contribute to the view average
-        self._alph  = tf.get_variable('alpha', dtype=tf.float32, shape=(cfg.NCAND,nviews,1,1),initializer=tf.zeros_initializer(),trainable=True)
+        self._alph     = tf.get_variable('alpha', dtype=tf.float32, shape=(cfg.NCAND,nviews,1,1),initializer=tf.zeros_initializer(),trainable=True)
         # 1D represenation for radial log variances
         self._logsig2  = tf.get_variable('logsig2', dtype=tf.float32,
-                                      initializer=tf.constant(np.log((MEAN_VAL**2)*(vlen**2)*(2*np.pi*np.arange(vlen//2,dtype=np.float32)+1.0)),np.float32),
+                                      initializer=tf.constant(np.log(cfg.FILL_FACT*(cfg.MEAN_VAL**2.0)*(vlen**2.0)*np.ones(vlen//2,dtype=np.float32)),tf.float32),
                                       trainable=True)
-        self._logb     = tf.get_variable('logb', dtype=tf.float32,initializer=tf.constant(np.float32(np.log(MEAN_VAL))),trainable=True)
+        self._logb     = tf.get_variable('logb', dtype=tf.float32,initializer=tf.constant(np.float32(np.log(cfg.MEAN_VAL*cfg.FILL_FACT)),tf.float32),trainable=True)
         self._vlen     = vlen
         self._1D_2D    =  tf.convert_to_tensor(polar_index_fft_2D(vlen),dtype=tf.int32)
         self._proj     = Proj(vlen, delta_deg, symmetry)
 
     def score(self,Pin):
-        gpus = get_available_gpus()
+        gpus   = get_available_gpus()
+        nviews = self._proj._nviews
 
         # projection onto all symmetric units
         with tf.device(gpus[0]):
@@ -122,6 +122,7 @@ class Backproj(Can):
             b    = tf.exp(self._logb)
             l1   = tf.reduce_mean(tf.abs(self._Vr))/b
             l1  += self._logb
+            l1  *= (self._vlen**2.0)
 
         with tf.device(gpus[1]):
             # obtain difference between reference and input
@@ -143,20 +144,17 @@ class Backproj(Can):
             # normalize by noise variance
             l2   = l2/(2.0*s2) #[None,...])
             # average over all frequency components
-            l2   = tf.reduce_mean(l2,axis=(-1,-2))
+            l2   = tf.reduce_sum(l2,axis=(-1,-2))
 
             # add mean of logvar over frequency components
-            l2  += tf.reduce_mean(self._logsig2)
+            l2  += tf.reduce_sum(self._logsig2)*(2.0*np.pi*self._vlen)
 
             # log likelihood
-            ll   = l2 + l1
+            ll   = nviews*(l2  + l1)
 
-            # remove average over views and candidates to avoid too small values in the exponent
-            ll  -= cfg.EXP_NORM*tf.stop_gradient(ll)
-            lhood = tf.exp(-ll)
+            lhood = tf.exp(-(ll-tf.stop_gradient(ll)))
 
-        tf.summary.scalar('ll', ll)
-        # tf.summary.scalar('factor ', tf.exp(logfact))
+        tf.summary.scalar('ll', -ll/((self._vlen**2.0)*nviews))
         tf.summary.scalar('b', b)
         tf.summary.scalar('sig2', tf.reduce_sum(self._logsig2))
 
@@ -164,6 +162,14 @@ class Backproj(Can):
 
 
 ##################### GARBAGE ####################################
+# remove average over views and candidates to avoid too small values in the exponent
+# ll  -= tf.stop_gradient(ll)*(1.0-1.0/(cfg.EXP_NORM*(0.5+np.log(cfg.MEAN_VAL*cfg.FILL_FACT))*(self._vlen**2.0)*nviews))
+# ll  = ll - tf.stop_gradient(ll) + 1.0
+
+# self._logsig2  = tf.get_variable('logsig2', dtype=tf.float32,
+        #                               initializer=tf.constant(np.log((MEAN_VAL**2)*(vlen**3)*(2*np.pi*np.arange(vlen//2,dtype=np.float32)+1.0)),np.float32),
+        #                               trainable=True)
+
         # nviews = self._proj._nviews
         # P  = self._proj(V)
 

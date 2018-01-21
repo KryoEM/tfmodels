@@ -6,5 +6,9 @@ DECAY_EPOCHS    = 20
 
 NCAND           = 6
 
-# exponential normalization factor for the calculating pdf
-EXP_NORM        = 0.8
+# approximate typical voxel value in the density
+MEAN_VAL        = 10.0
+# proportion of nonzero voxels
+FILL_FACT       = 0.1
+# normalizing coefficient to avoid exponent blow-up
+# EXP_NORM        = 100.0
