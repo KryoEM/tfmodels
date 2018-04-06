@@ -48,7 +48,7 @@ MIN_CLEARANCE = 0.1
 # skip a micrograph if it has too few particles
 MIN_PART_PER_MICRO = 20
 
-CTF_RES_THRESH = 4.5
+CTF_RES_THRESH = 5.5
 MAX_PARTICLES  = 1e8
 # particle circle line width
 CIRCLE_WIDTH = 2

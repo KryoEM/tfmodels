@@ -206,6 +206,7 @@ tf.app.flags.DEFINE_integer('eval_interval_secs', 30,
                             'The duration for the program to sleep before awaiting a new checkpoint to evaluate..')
 tf.app.flags.DEFINE_integer('reader_threads', 4, 'The number of parallel readers that read data from the dataset.')
 tf.app.flags.DEFINE_string('use_gpu', False, 'if to use gpu')
+
 FLAGS = load_config(tf.app.flags.FLAGS, 'eval')
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -222,13 +223,9 @@ else:
 
 # ctfstar = '/shared/results/rhodopsin-Gi/CtfFind/job003/micrographs_ctf.star'
 # outdir  = '/shared/results/rhodopsin-Gi/cnnpick/'
-base_dir = '/shared/results/rhodopsin-Gi'
-ctfstar = os.path.join(base_dir,'CtfFind/11k_mixed/micrographs_ctf.star')
+base_dir = '/jasper/result/NTSR1_Gq_20180223/'
+ctfstar = os.path.join(base_dir,'CtfFind/job002/micrographs_ctf.star')
 outdir  = os.path.join(base_dir,'cnnpick/')
-
-#
-# ctfstar = '/jasper/result/rhodopsin-Gi_new/CtfFind/job004/micrographs_ctf.star'
-# outdir  = '/jasper/result/rhodopsin-Gi_new/cnnpick/'
 
 psize = path2psize(ctfstar, 'CtfFind')
 # particle diameter in pixels
